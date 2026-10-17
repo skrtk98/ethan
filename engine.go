@@ -559,8 +559,8 @@ const notCompleted = "[NOT COMPLETED: the budget ran out before this subtask was
 // subtasks and is returned. When the budget runs out, subtasks not yet
 // started are skipped, those in flight finish, and if any subtask
 // succeeded the plan's output is assembled from them and reported partial.
-func (r *run) executePlan(ctx context.Context, parent *Task, b Brief, p *Plan) (partial bool, err error) {
-	ctx, cancel := context.WithCancel(ctx)
+func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *Plan) (partial bool, err error) {
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
 	done := make(map[string]chan struct{}, len(p.Subtasks))
@@ -618,6 +618,10 @@ func (r *run) executePlan(ctx context.Context, parent *Task, b Brief, p *Plan) (
 		})
 	}
 	wg.Wait()
+	// A cancellation from the caller is a failure, never a partial result.
+	if err := parentCtx.Err(); err != nil {
+		return false, err
+	}
 	if hardErr != nil {
 		return false, hardErr
 	}
@@ -638,7 +642,7 @@ func (r *run) executePlan(ctx context.Context, parent *Task, b Brief, p *Plan) (
 		}
 	}
 	if finished == 0 {
-		return false, budgetErr
+		return false, cmp.Or(budgetErr, errors.New("no subtask finished"))
 	}
 	out, err := r.synthesizer.Synthesize(ctx, b, results)
 	switch {

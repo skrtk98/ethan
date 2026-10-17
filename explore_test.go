@@ -521,3 +521,26 @@ func TestPlannerSeesDepthAndBudget(t *testing.T) {
 		}
 	}
 }
+
+func TestCancellationIsNeverAPartialSuccess(t *testing.T) {
+	// A finishes, then the caller cancels before B (which needs A) starts.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p",
+			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}},
+		))).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			cancel()
+			return echoTask(req)
+		}).
+		On(ethan.TagSynthesize, joinResults)
+
+	res, err := ethan.New(m).Run(ctx, "goal")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if res.Partial || res.Root.Status != ethan.StatusFailed {
+		t.Errorf("Partial=%v root=%s", res.Partial, res.Root.Status)
+	}
+}
