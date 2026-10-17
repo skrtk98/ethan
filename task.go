@@ -47,6 +47,8 @@ type Plan struct {
 	ResultScore *Score  `json:"result_score,omitempty"`
 	Output      string  `json:"output,omitempty"`
 	Error       string  `json:"error,omitempty"`
+
+	joined bool // the budget ran out before synthesis; Output joins the results
 }
 
 // Score is an evaluation in [0, 1] with its justification.

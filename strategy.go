@@ -101,6 +101,9 @@ func best(ctx context.Context, x Exploration, ok []*Plan) *Plan {
 	if complete := slices.DeleteFunc(slices.Clone(ok), func(p *Plan) bool { return p.Status != StatusDone }); len(complete) > 0 {
 		ok = complete
 	}
+	if synthesized := slices.DeleteFunc(slices.Clone(ok), func(p *Plan) bool { return p.joined }); len(synthesized) > 0 {
+		ok = synthesized
+	}
 	if len(ok) == 1 {
 		return ok[0]
 	}

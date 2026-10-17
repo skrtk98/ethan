@@ -252,7 +252,10 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 func (r *run) reserve(ctx context.Context, tokens int, held *int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	limit := r.engine.budget.MaxTokens
+	limit, synthesis := r.engine.budget.limits()
+	if ctx.Value(rootSynthesis{}) != nil {
+		limit = synthesis
+	}
 	for limit > 0 && r.spent.Total()+r.reserved+tokens > limit {
 		if r.spent.Total()+*held+tokens > limit || r.reserved-r.waiting-*held <= 0 {
 			r.exhausted = true
@@ -285,7 +288,7 @@ func (r *run) settle(held *int, used Usage) {
 	r.reserved -= *held
 	*held = 0
 	r.spent = r.spent.Add(used)
-	if limit := r.engine.budget.MaxTokens; limit > 0 && r.spent.Total() >= limit {
+	if limit, _ := r.engine.budget.limits(); limit > 0 && r.spent.Total() >= limit {
 		r.exhausted = true
 	}
 	close(r.released)
@@ -332,8 +335,8 @@ func (r *run) planRequest(t *Task, b Brief) PlanRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	req.RemainingNodes = budget.MaxNodes - r.nodes
-	if budget.MaxTokens > 0 {
-		req.RemainingTokens = max(budget.MaxTokens-r.spent.Total()-r.reserved, 0)
+	if limit, _ := budget.limits(); limit > 0 {
+		req.RemainingTokens = max(limit-r.spent.Total()-r.reserved, 0)
 	}
 	return req
 }
@@ -674,13 +677,21 @@ func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *P
 	if finished == 0 {
 		return false, cmp.Or(budgetErr, errors.New("no subtask finished"))
 	}
-	out, err := r.synthesizer.Synthesize(ctx, b, results)
+	sctx := ctx
+	if parent.Depth == 0 {
+		sctx = context.WithValue(ctx, rootSynthesis{}, true)
+	}
+	out, err := r.synthesizer.Synthesize(sctx, b, results)
 	switch {
 	case errors.Is(err, ErrBudgetExhausted):
-		out = joinResults(results)
+		out, p.joined = joinResults(results), true
 	case err != nil:
 		return false, fmt.Errorf("synthesize: %w", err)
 	}
 	p.Output = out
 	return partial, nil
 }
+
+// rootSynthesis marks the context of a root plan's synthesis, which may use
+// Budget.SynthesisReserve.
+type rootSynthesis struct{}

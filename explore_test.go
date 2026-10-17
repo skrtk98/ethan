@@ -243,7 +243,7 @@ func TestTokenBudgetFallsBackToJoinedResults(t *testing.T) {
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults)
 
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 100}), flatCost).Run(context.Background(), "goal")
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 100, SynthesisReserve: -1}), flatCost).Run(context.Background(), "goal")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,6 +255,66 @@ func TestTokenBudgetFallsBackToJoinedResults(t *testing.T) {
 	}
 	if len(m.Calls(ethan.TagSynthesize)) != 0 {
 		t.Error("synthesis was called despite the exhausted budget")
+	}
+}
+
+func TestRootSynthesisUsesTheReserve(t *testing.T) {
+	// Each call costs 20 and 20 of the 100 tokens are held back: the plan
+	// and three executions use the other 80, D is refused, and the root's
+	// synthesis still runs on the reserve.
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p",
+			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"},
+			sub{ID: "c", Description: "C", DependsOn: []string{"a", "b"}},
+			sub{ID: "d", Description: "D", DependsOn: []string{"c"}},
+		))).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, ethantest.ReplyText("synthesized"))
+
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 100, SynthesisReserve: 0.2}), flatCost).
+		Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Exhausted || !res.Partial {
+		t.Errorf("Exhausted = %v, Partial = %v; want both", res.Exhausted, res.Partial)
+	}
+	if res.Output != "synthesized" {
+		t.Errorf("Output = %q, want the synthesis", res.Output)
+	}
+	if res.Usage.Total() > 100 {
+		t.Errorf("spent %d tokens, budget 100", res.Usage.Total())
+	}
+}
+
+func TestSynthesisBelowTheRootLeavesTheReserveAlone(t *testing.T) {
+	// X is decomposed into Y and Z. The plan calls for the root and X and
+	// the executions of Y and Z use the 80 general tokens, so X's synthesis
+	// is refused and joins; the reserve is left for the root's synthesis.
+	m := ethantest.New().
+		On(ethan.TagPlan, func(req ethan.Request) (*ethan.Response, error) {
+			switch taskOf(req) {
+			case "goal":
+				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("root", sub{ID: "x", Description: "X"})}}), nil
+			case "X":
+				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("x",
+					sub{ID: "y", Description: "Y"}, sub{ID: "z", Description: "Z"})}}), nil
+			}
+			return ethantest.JSON(ethan.Decision{Atomic: true}), nil
+		}).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, ethantest.ReplyText("synthesized"))
+
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 100, SynthesisReserve: 0.2}), flatCost).
+		Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(m.Calls(ethan.TagSynthesize)); n != 1 || res.Output != "synthesized" {
+		t.Errorf("%d syntheses, Output = %q; want only the root's", n, res.Output)
+	}
+	if x := res.Root.Plans[0].Subtasks[0]; !strings.Contains(x.Output, "out(Y)") {
+		t.Errorf("X's output = %q, want Y and Z joined", x.Output)
 	}
 }
 
@@ -312,7 +372,7 @@ func TestConcurrentCallsCannotOverspend(t *testing.T) {
 		}).
 		On(ethan.TagSynthesize, joinResults)
 
-	res, _ := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 80}), flatCost).Run(context.Background(), "goal")
+	res, _ := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 80, SynthesisReserve: -1}), flatCost).Run(context.Background(), "goal")
 	if res.Usage.Total() > 80 {
 		t.Errorf("spent %d tokens, budget 80", res.Usage.Total())
 	}
@@ -341,7 +401,7 @@ func TestReservationsWaitingOnEachOtherDoNotDeadlock(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 100}), est).Run(ctx, "goal")
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 100, SynthesisReserve: -1}), est).Run(ctx, "goal")
 	if ctx.Err() != nil {
 		t.Fatal("deadlocked")
 	}
@@ -554,7 +614,8 @@ func TestPlannerSeesDepthAndBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := ethantest.Prompt(m.Calls(ethan.TagPlan)[0])
-	for _, want := range []string{"Depth: 0 (tasks at depth 3", "Tasks that may still start: 8", "Tokens left: about 1000"} {
+	// The planner sees the tokens left outside the 15% held back for synthesis.
+	for _, want := range []string{"Depth: 0 (tasks at depth 3", "Tasks that may still start: 8", "Tokens left: about 850"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("planner prompt lacks %q:\n%s", want, p)
 		}

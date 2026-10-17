@@ -54,3 +54,13 @@ func TestReservationWaitsForOthersToSettle(t *testing.T) {
 		t.Error("a reservation that only had to wait marked the run exhausted")
 	}
 }
+
+func TestBestPrefersSynthesizedPlans(t *testing.T) {
+	// Two root plans ran out of budget; only one fitted its synthesis in
+	// the reserve. It wins without scoring, which the budget would refuse.
+	joined := &Plan{ID: "p1", Status: StatusPartial, joined: true}
+	synthesized := &Plan{ID: "p2", Status: StatusPartial}
+	if got := best(context.Background(), nil, []*Plan{joined, synthesized}); got != synthesized {
+		t.Errorf("best = %s, want the synthesized plan", got.ID)
+	}
+}
