@@ -8,6 +8,10 @@ import (
 
 // Model is the abstraction over an LLM provider.
 // Implementations must be safe for concurrent use.
+//
+// Generate may return a non-nil Response together with an error; its Usage
+// then reports the tokens consumed before the failure, and nothing else in
+// it is meaningful.
 type Model interface {
 	Generate(ctx context.Context, req Request) (*Response, error)
 }
@@ -32,6 +36,12 @@ type Request struct {
 	// Output, when set, asks the model for a JSON value matching the schema
 	// instead of free text. The value is returned in Response.Output.
 	Output *OutputSchema
+	// Reserve, when set, must be called by an adapter before each additional
+	// underlying API call it makes for this request (e.g. to resume a paused
+	// turn), with an upper estimate of that call's tokens. The first call is
+	// reserved by the caller. If Reserve fails, the adapter must not make the
+	// call and must return the error.
+	Reserve func(tokens int) error
 }
 
 // OutputSchema describes a structured output.

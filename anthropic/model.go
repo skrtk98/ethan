@@ -72,17 +72,25 @@ func New(opts ...Option) *Model {
 	return m
 }
 
-// Generate implements ethan.Model.
+// Generate implements ethan.Model. When a call fails after tokens were
+// spent (a refusal, truncated structured output, an error while resuming a
+// paused turn), the returned Response carries their Usage.
 func (m *Model) Generate(ctx context.Context, req ethan.Request) (*ethan.Response, error) {
 	params, err := m.params(req)
 	if err != nil {
 		return nil, err
 	}
 	out := &ethan.Response{}
-	for range maxContinuations {
+	for i := range maxContinuations {
+		// The resumed call resends everything so far, which the usage so far bounds.
+		if i > 0 && req.Reserve != nil {
+			if err := req.Reserve(int(params.MaxTokens) + out.Usage.Total()); err != nil {
+				return out, err
+			}
+		}
 		msg, err := m.client.Beta.Messages.New(ctx, params)
 		if err != nil {
-			return nil, err
+			return out, err
 		}
 		out.Usage = out.Usage.Add(usage(msg.Usage))
 		out.Parts = append(out.Parts, parts(msg.Content)...)
@@ -93,10 +101,10 @@ func (m *Model) Generate(ctx context.Context, req ethan.Request) (*ethan.Respons
 			params.Messages = append(params.Messages, msg.ToParam())
 			continue
 		case sdk.BetaStopReasonRefusal:
-			return nil, fmt.Errorf("%w: %s", ErrRefused, msg.StopDetails.Category)
+			return out, fmt.Errorf("%w: %s", ErrRefused, msg.StopDetails.Category)
 		case sdk.BetaStopReasonMaxTokens:
 			if req.Output != nil {
-				return nil, fmt.Errorf("anthropic: structured output truncated at max_tokens (%d)", req.MaxTokens)
+				return out, fmt.Errorf("anthropic: structured output truncated at max_tokens (%d)", req.MaxTokens)
 			}
 		}
 		if req.Output != nil {
@@ -104,7 +112,7 @@ func (m *Model) Generate(ctx context.Context, req ethan.Request) (*ethan.Respons
 		}
 		return out, nil
 	}
-	return nil, fmt.Errorf("anthropic: turn still paused after %d continuations", maxContinuations)
+	return out, fmt.Errorf("anthropic: turn still paused after %d continuations", maxContinuations)
 }
 
 func (m *Model) params(req ethan.Request) (sdk.BetaMessageNewParams, error) {

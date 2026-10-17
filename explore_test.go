@@ -232,6 +232,9 @@ func TestMaxDepthStopsDecomposition(t *testing.T) {
 	}
 }
 
+// flatCost makes every call reserve exactly what the scripted model spends.
+var flatCost = ethan.WithTokenEstimator(func(ethan.Request) int { return ethantest.DefaultUsage.Total() })
+
 func TestTokenBudgetFallsBackToJoinedResults(t *testing.T) {
 	// Each call costs 20 tokens: plan(root), plan(A), plan(B), execute(A),
 	// execute(B) spend 100, so synthesis is refused.
@@ -240,7 +243,7 @@ func TestTokenBudgetFallsBackToJoinedResults(t *testing.T) {
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults)
 
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 100})).Run(context.Background(), "goal")
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 100}), flatCost).Run(context.Background(), "goal")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +261,7 @@ func TestTokenBudgetFallsBackToJoinedResults(t *testing.T) {
 func TestTokenBudgetExhaustedBeforeAnyResultFails(t *testing.T) {
 	m := ethantest.New().On(ethan.TagPlan, threePlans()).On(ethan.TagExecute, echoTask)
 
-	_, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 20})).Run(context.Background(), "goal")
+	_, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 20}), flatCost).Run(context.Background(), "goal")
 	if !errors.Is(err, ethan.ErrBudgetExhausted) {
 		t.Fatalf("err = %v, want ErrBudgetExhausted", err)
 	}
@@ -287,5 +290,78 @@ func TestMaxConcurrencyLimitsModelCalls(t *testing.T) {
 	}
 	if peak.Load() != 1 {
 		t.Errorf("peak concurrency = %d, want 1", peak.Load())
+	}
+}
+
+func TestConcurrentCallsCannotOverspend(t *testing.T) {
+	// The root plan costs 20; four parallel executions of 20 each would
+	// overshoot 80, so the reservation must refuse one of them up front.
+	release := make(chan struct{})
+	var started atomic.Int32
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p",
+			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"},
+			sub{ID: "c", Description: "C"}, sub{ID: "d", Description: "D"},
+		))).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			if started.Add(1) == 3 {
+				close(release)
+			}
+			<-release
+			return echoTask(req)
+		}).
+		On(ethan.TagSynthesize, joinResults)
+
+	res, _ := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 80}), flatCost).Run(context.Background(), "goal")
+	if res.Usage.Total() > 80 {
+		t.Errorf("spent %d tokens, budget 80", res.Usage.Total())
+	}
+	if !res.Exhausted {
+		t.Error("Exhausted = false")
+	}
+}
+
+func TestExhaustedWhenLastCallReachesTheLimit(t *testing.T) {
+	m := ethantest.New().On(ethan.TagPlan, atomicPlan()).On(ethan.TagExecute, ethantest.ReplyText("x"))
+	small := ethan.WithTokenEstimator(func(ethan.Request) int { return 1 })
+
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 40}), small).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Exhausted {
+		t.Error("spending exactly the budget did not set Exhausted")
+	}
+}
+
+func TestUsageOfFailedCallsIsCounted(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, atomicPlan()).
+		On(ethan.TagExecute, func(ethan.Request) (*ethan.Response, error) {
+			return &ethan.Response{Usage: ethan.Usage{InputTokens: 500}}, errors.New("refused")
+		})
+
+	res, _ := ethan.New(m).Run(context.Background(), "goal")
+	if res.Usage.InputTokens < 500 {
+		t.Errorf("Usage = %+v, want the failed call's 500 input tokens", res.Usage)
+	}
+}
+
+func TestAdapterContinuationsAreReserved(t *testing.T) {
+	var reserveErr error
+	m := ethantest.New().
+		On(ethan.TagPlan, atomicPlan()).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			// An adapter resuming a paused turn asks for more budget first.
+			reserveErr = req.Reserve(1000)
+			if reserveErr != nil {
+				return &ethan.Response{Usage: ethantest.DefaultUsage}, reserveErr
+			}
+			return ethantest.Text("x"), nil
+		})
+
+	_, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 500}), flatCost).Run(context.Background(), "goal")
+	if !errors.Is(reserveErr, ethan.ErrBudgetExhausted) || !errors.Is(err, ethan.ErrBudgetExhausted) {
+		t.Errorf("reserve err = %v, run err = %v", reserveErr, err)
 	}
 }

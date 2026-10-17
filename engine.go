@@ -24,6 +24,7 @@ type Engine struct {
 	strategy        Strategy
 	budget          Budget
 	executeTemplate *template.Template
+	estimate        func(Request) int
 	observers       []Observer
 	notesInPrompt   int
 	maxPlans        int
@@ -69,6 +70,13 @@ func WithExecuteTemplate(t *template.Template) Option {
 	return func(e *Engine) { e.executeTemplate = t }
 }
 
+// WithTokenEstimator replaces the estimate a model call reserves against
+// Budget.MaxTokens before it starts. The estimate should be an upper bound
+// of the call's input plus output tokens.
+func WithTokenEstimator(f func(Request) int) Option {
+	return func(e *Engine) { e.estimate = f }
+}
+
 // WithObserver adds an observer that receives the events of every Run.
 func WithObserver(o Observer) Option {
 	return func(e *Engine) { e.observers = append(e.observers, o) }
@@ -94,7 +102,7 @@ func WithMaxOutputTokens(n int) Option {
 // New returns an Engine whose components default to LLM-backed
 // implementations using m.
 func New(m Model, opts ...Option) *Engine {
-	e := &Engine{model: m, maxPlans: 3, notesInPrompt: 20, strategy: BeamStrategy{}}
+	e := &Engine{model: m, maxPlans: 3, notesInPrompt: 20, strategy: BeamStrategy{}, estimate: estimateTokens}
 	for _, o := range opts {
 		o(e)
 	}
@@ -118,7 +126,8 @@ type Result struct {
 	Error string `json:"error,omitempty"`
 	Root  *Task  `json:"root"`
 	Usage Usage  `json:"usage"`
-	// Exhausted reports whether the token budget ran out during the Run.
+	// Exhausted reports whether the budget ran out during the Run: a model
+	// call was refused, or the tokens spent reached Budget.MaxTokens.
 	Exhausted bool    `json:"exhausted"`
 	Notes     []Note  `json:"notes"`
 	Events    []Event `json:"events"`
@@ -180,6 +189,7 @@ type run struct {
 
 	mu        sync.Mutex
 	spent     Usage
+	reserved  int
 	exhausted bool
 	nodes     int
 }
@@ -202,21 +212,45 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	r.mu.Lock()
-	if limit := r.engine.budget.MaxTokens; limit > 0 && r.spent.Total() >= limit {
-		r.exhausted = true
-		r.mu.Unlock()
-		return nil, ErrBudgetExhausted
+	held := 0 // tokens this call has reserved; guarded by r.mu
+	if err := r.reserve(r.engine.estimate(req), &held); err != nil {
+		return nil, err
 	}
-	r.mu.Unlock()
+	req.Reserve = func(tokens int) error { return r.reserve(tokens, &held) }
 
 	resp, err := mm.model.Generate(ctx, req)
+	var used Usage
 	if resp != nil {
-		r.mu.Lock()
-		r.spent = r.spent.Add(resp.Usage)
-		r.mu.Unlock()
+		used = resp.Usage
 	}
+	r.settle(&held, used)
 	return resp, err
+}
+
+// reserve sets aside tokens for a model call, adding them to *held, or
+// fails with ErrBudgetExhausted if they do not fit in the budget.
+func (r *run) reserve(tokens int, held *int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if limit := r.engine.budget.MaxTokens; limit > 0 && r.spent.Total()+r.reserved+tokens > limit {
+		r.exhausted = true
+		return ErrBudgetExhausted
+	}
+	r.reserved += tokens
+	*held += tokens
+	return nil
+}
+
+// settle releases a call's reservation and records what it actually used.
+func (r *run) settle(held *int, used Usage) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reserved -= *held
+	*held = 0
+	r.spent = r.spent.Add(used)
+	if limit := r.engine.budget.MaxTokens; limit > 0 && r.spent.Total() >= limit {
+		r.exhausted = true
+	}
 }
 
 // emit records e and delivers it to the observers, one event at a time.

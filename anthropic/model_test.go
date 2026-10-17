@@ -162,8 +162,39 @@ func TestPausedTurnIsResumed(t *testing.T) {
 func TestRefusal(t *testing.T) {
 	f := &fakeAPI{responses: []string{`{"id":"msg","type":"message","role":"assistant","model":"m","stop_reason":"refusal",
 		"stop_details":{"type":"refusal","category":"cyber"},"content":[],"usage":{"input_tokens":5,"output_tokens":0}}`}}
-	_, err := newModel(t, f).Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("x")}, MaxTokens: 10})
+	resp, err := newModel(t, f).Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("x")}, MaxTokens: 10})
 	if !errors.Is(err, anthropic.ErrRefused) || !strings.Contains(err.Error(), "cyber") {
 		t.Errorf("err = %v", err)
+	}
+	if resp == nil || resp.Usage.InputTokens != 5 {
+		t.Errorf("usage of the refused call was lost: %+v", resp)
+	}
+}
+
+func TestContinuationIsReservedAndRefusalKeepsUsage(t *testing.T) {
+	f := &fakeAPI{responses: []string{
+		message("pause_turn", `{"type":"server_tool_use","id":"srv-1","name":"web_search","input":{"query":"q"}}`),
+		message("end_turn", `{"type":"text","text":"never sent"}`),
+	}}
+	var asked []int
+	resp, err := newModel(t, f).Generate(context.Background(), ethan.Request{
+		Messages:  []ethan.Message{ethan.UserText("search")},
+		MaxTokens: 100,
+		Reserve: func(tokens int) error {
+			asked = append(asked, tokens)
+			return ethan.ErrBudgetExhausted
+		},
+	})
+	if !errors.Is(err, ethan.ErrBudgetExhausted) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(asked) != 1 || asked[0] != 108 {
+		t.Errorf("reserved %v, want [108] (max tokens + usage so far)", asked)
+	}
+	if len(f.bodies) != 1 {
+		t.Errorf("made %d API calls after the reservation failed", len(f.bodies))
+	}
+	if resp == nil || resp.Usage.Total() != 8 {
+		t.Errorf("usage of the first call was lost: %+v", resp)
 	}
 }
