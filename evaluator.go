@@ -19,9 +19,10 @@ var scoreSchema = &OutputSchema{
   "type": "object",
   "properties": {
     "reason": {"type": "string", "description": "brief justification, written before deciding the value"},
-    "value": {"type": "number", "minimum": 0, "maximum": 1}
+    "value": {"type": "number", "description": "from 0 to 1"}
   },
-  "required": ["reason", "value"]
+  "required": ["reason", "value"],
+  "additionalProperties": false
 }`),
 }
 

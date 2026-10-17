@@ -54,7 +54,7 @@ var decisionSchema = &OutputSchema{
 	Schema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "atomic": {"type": "boolean", "description": "true if a single agent can complete the task directly"},
+    "atomic": {"type": "boolean", "description": "true if a single agent can complete the task directly; plans is then empty"},
     "plans": {
       "type": "array",
       "items": {
@@ -71,15 +71,18 @@ var decisionSchema = &OutputSchema{
                 "agent": {"type": "string"},
                 "depends_on": {"type": "array", "items": {"type": "string"}}
               },
-              "required": ["id", "description", "agent"]
+              "required": ["id", "description", "agent", "depends_on"],
+              "additionalProperties": false
             }
           }
         },
-        "required": ["rationale", "subtasks"]
+        "required": ["rationale", "subtasks"],
+        "additionalProperties": false
       }
     }
   },
-  "required": ["atomic"]
+  "required": ["atomic", "plans"],
+  "additionalProperties": false
 }`),
 }
 
@@ -154,5 +157,5 @@ func maxTokensOr(n int) int {
 	if n > 0 {
 		return n
 	}
-	return 4096
+	return 16000
 }

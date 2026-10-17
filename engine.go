@@ -85,7 +85,8 @@ func WithMaxPlans(n int) Option {
 	return func(e *Engine) { e.maxPlans = n }
 }
 
-// WithMaxOutputTokens bounds the output tokens of each model call. Default 4096.
+// WithMaxOutputTokens bounds the output tokens, including thinking, of each
+// model call. Default 16000.
 func WithMaxOutputTokens(n int) Option {
 	return func(e *Engine) { e.maxTokens = n }
 }
@@ -212,7 +213,7 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 	resp, err := mm.model.Generate(ctx, req)
 	if resp != nil {
 		r.mu.Lock()
-		r.spent = r.spent.add(resp.Usage)
+		r.spent = r.spent.Add(resp.Usage)
 		r.mu.Unlock()
 	}
 	return resp, err

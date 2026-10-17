@@ -55,11 +55,17 @@ type Message struct {
 	Parts []Part
 }
 
-// Part is one element of a Message. Exactly one field is set.
+// Part is one element of a Message. At most one of Text, ToolCall and
+// ToolResult is set.
 type Part struct {
 	Text       string
 	ToolCall   *ToolCall
 	ToolResult *ToolResult
+	// Raw is the provider's own representation of the part. Adapters set it
+	// on response parts and send it back unchanged when the part is replayed,
+	// which preserves blocks the abstraction does not model (thinking,
+	// server-side tool use). Everything else should ignore it.
+	Raw any
 }
 
 // ToolCall is a request from the model to run a client-side tool.
@@ -117,6 +123,7 @@ type Usage struct {
 // Total returns input plus output tokens.
 func (u Usage) Total() int { return u.InputTokens + u.OutputTokens }
 
-func (u Usage) add(o Usage) Usage {
+// Add returns the sum of u and o.
+func (u Usage) Add(o Usage) Usage {
 	return Usage{InputTokens: u.InputTokens + o.InputTokens, OutputTokens: u.OutputTokens + o.OutputTokens}
 }
