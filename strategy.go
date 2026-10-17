@@ -101,20 +101,33 @@ func best(ctx context.Context, x Exploration, ok []*Plan) *Plan {
 	if complete := slices.DeleteFunc(slices.Clone(ok), func(p *Plan) bool { return p.Status != StatusDone }); len(complete) > 0 {
 		ok = complete
 	}
-	if synthesized := slices.DeleteFunc(slices.Clone(ok), func(p *Plan) bool { return p.joined }); len(synthesized) > 0 {
-		ok = synthesized
-	}
 	if len(ok) == 1 {
 		return ok[0]
 	}
 	scores := parallel(ok, func(p *Plan) *Score { return x.ScoreResult(ctx, p) })
 	bi := 0
+	// Equal scores, including results that could not be scored when the
+	// budget ran out, go to the plan that finished more of its subtasks.
 	for i := range ok {
-		if value(scores[i]) > value(scores[bi]) {
+		if v, bv := value(scores[i]), value(scores[bi]); v > bv || v == bv && finished(ok[i]) > finished(ok[bi]) {
 			bi = i
 		}
 	}
 	return ok[bi]
+}
+
+// finished is the fraction of p's subtasks that produced a result.
+func finished(p *Plan) float64 {
+	if len(p.Subtasks) == 0 {
+		return 0
+	}
+	n := 0
+	for _, st := range p.Subtasks {
+		if st.Status.usable() {
+			n++
+		}
+	}
+	return float64(n) / float64(len(p.Subtasks))
 }
 
 func value(s *Score) float64 {

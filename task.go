@@ -48,7 +48,9 @@ type Plan struct {
 	Output      string  `json:"output,omitempty"`
 	Error       string  `json:"error,omitempty"`
 
-	joined bool // the budget ran out before synthesis; Output joins the results
+	// joined holds the subtask results when the budget ran out before they
+	// were synthesized and Output only joins them.
+	joined []SubtaskResult
 }
 
 // Score is an evaluation in [0, 1] with its justification.

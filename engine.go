@@ -200,6 +200,7 @@ type run struct {
 	mu        sync.Mutex
 	spent     Usage
 	reserved  int
+	noReserve bool          // the root is executed directly; Budget.SynthesisReserve is released
 	waiters   int           // calls waiting in reserve
 	waiting   int           // tokens held by those calls
 	released  chan struct{} // closed and replaced whenever a reservation is released
@@ -252,10 +253,7 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 func (r *run) reserve(ctx context.Context, tokens int, held *int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	limit, synthesis := r.engine.budget.limits()
-	if ctx.Value(rootSynthesis{}) != nil {
-		limit = synthesis
-	}
+	limit := r.limit(ctx.Value(rootSynthesis{}) != nil)
 	for limit > 0 && r.spent.Total()+r.reserved+tokens > limit {
 		if r.spent.Total()+*held+tokens > limit || r.reserved-r.waiting-*held <= 0 {
 			r.exhausted = true
@@ -281,6 +279,17 @@ func (r *run) reserve(ctx context.Context, tokens int, held *int) error {
 	return nil
 }
 
+// limit is the token budget open to a call, zero for unlimited; r.mu is
+// held. Only the root's synthesis may use Budget.SynthesisReserve, unless the
+// reserve was released.
+func (r *run) limit(synthesis bool) int {
+	general, all := r.engine.budget.limits()
+	if synthesis || r.noReserve {
+		return all
+	}
+	return general
+}
+
 // settle releases a call's reservation and records what it actually used.
 func (r *run) settle(held *int, used Usage) {
 	r.mu.Lock()
@@ -288,7 +297,7 @@ func (r *run) settle(held *int, used Usage) {
 	r.reserved -= *held
 	*held = 0
 	r.spent = r.spent.Add(used)
-	if limit, _ := r.engine.budget.limits(); limit > 0 && r.spent.Total() >= limit {
+	if limit := r.limit(false); limit > 0 && r.spent.Total() >= limit {
 		r.exhausted = true
 	}
 	close(r.released)
@@ -335,7 +344,7 @@ func (r *run) planRequest(t *Task, b Brief) PlanRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	req.RemainingNodes = budget.MaxNodes - r.nodes
-	if limit, _ := budget.limits(); limit > 0 {
+	if limit := r.limit(false); limit > 0 {
 		req.RemainingTokens = max(limit-r.spent.Total()-r.reserved, 0)
 	}
 	return req
@@ -406,6 +415,12 @@ func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []Su
 		// A failed or unusable decision falls back to direct execution.
 	}
 	r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: "atomic"})
+	if t.Depth == 0 {
+		// No plan of the root will need the synthesis reserve.
+		r.mu.Lock()
+		r.noReserve = true
+		r.mu.Unlock()
+	}
 	return r.executeLeaf(ctx, t, b)
 }
 
@@ -507,6 +522,17 @@ func (r *run) explore(ctx context.Context, t *Task, b Brief, plans []*Plan) erro
 	}
 	if p == nil || !p.Status.usable() {
 		return errors.New("strategy returned no successful plan")
+	}
+	if t.Depth == 0 && p.joined != nil {
+		// The budget ran out before this plan was synthesized; the reserve
+		// was kept for this one synthesis, of the plan that was chosen.
+		out, err := r.synthesizer.Synthesize(context.WithValue(ctx, rootSynthesis{}, true), b, p.joined)
+		switch {
+		case err == nil:
+			p.Output, p.joined = out, nil
+		case ctx.Err() != nil:
+			return ctx.Err()
+		}
 	}
 	t.Chosen, t.Output, t.Score = p.ID, p.Output, p.ResultScore
 	if p.Status == StatusPartial {
@@ -677,14 +703,10 @@ func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *P
 	if finished == 0 {
 		return false, cmp.Or(budgetErr, errors.New("no subtask finished"))
 	}
-	sctx := ctx
-	if parent.Depth == 0 {
-		sctx = context.WithValue(ctx, rootSynthesis{}, true)
-	}
-	out, err := r.synthesizer.Synthesize(sctx, b, results)
+	out, err := r.synthesizer.Synthesize(ctx, b, results)
 	switch {
 	case errors.Is(err, ErrBudgetExhausted):
-		out, p.joined = joinResults(results), true
+		out, p.joined = joinResults(results), results
 	case err != nil:
 		return false, fmt.Errorf("synthesize: %w", err)
 	}
@@ -692,6 +714,6 @@ func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *P
 	return partial, nil
 }
 
-// rootSynthesis marks the context of a root plan's synthesis, which may use
-// Budget.SynthesisReserve.
+// rootSynthesis marks the context of the chosen root plan's second
+// synthesis, which may use Budget.SynthesisReserve.
 type rootSynthesis struct{}

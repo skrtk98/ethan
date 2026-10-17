@@ -287,6 +287,47 @@ func TestRootSynthesisUsesTheReserve(t *testing.T) {
 	}
 }
 
+func TestAtomicRootReleasesTheReserve(t *testing.T) {
+	// Half of the 50 tokens are held back; the plan (20) and the execution
+	// (20) fit only once the root, executed directly, releases them.
+	m := ethantest.New().On(ethan.TagPlan, atomicPlan()).On(ethan.TagExecute, echoTask)
+
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 50, SynthesisReserve: 0.5}), flatCost).
+		Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Exhausted {
+		t.Error("Exhausted = true")
+	}
+}
+
+func TestReserveSynthesizesTheChosenRootPlan(t *testing.T) {
+	// Two root plans run out of budget before their synthesis. P2 finished
+	// more of its subtasks, so it is chosen and synthesized on the reserve,
+	// which has room for one synthesis only.
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(
+			plan("p1", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}}),
+			plan("p2", sub{ID: "c", Description: "C"}),
+		)).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults)
+	// plan(root) 20, execute A and C 40: the general 60 is used up and B is
+	// refused; the reserve of 25 fits one synthesis.
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 85, SynthesisReserve: 25.0 / 85}),
+		ethan.WithStrategy(ethan.BeamStrategy{Width: 2}), flatCost).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Root.Chosen != "t0.p2" || res.Output != "out(C)" {
+		t.Errorf("chose %s with output %q; want t0.p2 synthesized to out(C)", res.Root.Chosen, res.Output)
+	}
+	if n := len(m.Calls(ethan.TagSynthesize)); n != 1 {
+		t.Errorf("%d syntheses, want the chosen plan's only", n)
+	}
+}
+
 func TestSynthesisBelowTheRootLeavesTheReserveAlone(t *testing.T) {
 	// X is decomposed into Y and Z. The plan calls for the root and X and
 	// the executions of Y and Z use the 80 general tokens, so X's synthesis

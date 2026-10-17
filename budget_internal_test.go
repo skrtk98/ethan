@@ -55,12 +55,32 @@ func TestReservationWaitsForOthersToSettle(t *testing.T) {
 	}
 }
 
-func TestBestPrefersSynthesizedPlans(t *testing.T) {
-	// Two root plans ran out of budget; only one fitted its synthesis in
-	// the reserve. It wins without scoring, which the budget would refuse.
-	joined := &Plan{ID: "p1", Status: StatusPartial, joined: true}
-	synthesized := &Plan{ID: "p2", Status: StatusPartial}
-	if got := best(context.Background(), nil, []*Plan{joined, synthesized}); got != synthesized {
-		t.Errorf("best = %s, want the synthesized plan", got.ID)
+// unscorable is an exploration whose results cannot be scored, as when the
+// budget has run out.
+type unscorable struct{ Exploration }
+
+func (unscorable) ScoreResult(context.Context, *Plan) *Score { return nil }
+
+func TestBestPrefersTheMoreFinishedPlanWhenScoresTie(t *testing.T) {
+	plan := func(id string, statuses ...Status) *Plan {
+		p := &Plan{ID: id, Status: StatusPartial}
+		for _, s := range statuses {
+			p.Subtasks = append(p.Subtasks, &Task{Status: s})
+		}
+		return p
+	}
+	quarter := plan("p1", StatusDone, StatusFailed, StatusFailed, StatusPruned)
+	twoThirds := plan("p2", StatusDone, StatusPartial, StatusPruned)
+	if got := best(context.Background(), unscorable{}, []*Plan{quarter, twoThirds}); got != twoThirds {
+		t.Errorf("best = %s, want p2, which finished more of its subtasks", got.ID)
+	}
+}
+
+func TestWholeBudgetReserveIsNotUnlimited(t *testing.T) {
+	for _, share := range []float64{1, 2} {
+		general, all := Budget{MaxTokens: 100, SynthesisReserve: share}.limits()
+		if general != 1 || all != 100 {
+			t.Errorf("reserve %v: limits = %d, %d; want 1, 100", share, general, all)
+		}
 	}
 }

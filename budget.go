@@ -33,11 +33,13 @@ type Budget struct {
 	// than the adapter allowed for) can carry the total past MaxTokens, after
 	// which no further call starts.
 	MaxTokens int
-	// SynthesisReserve is the fraction of MaxTokens held back for the
-	// synthesis of the root's plans, so that a Run that runs out of budget
-	// still integrates what it found instead of only joining it. Every other
-	// call counts the budget as exhausted once the rest is used. Default
-	// 0.15; negative for none.
+	// SynthesisReserve is the fraction of MaxTokens held back so that a Run
+	// that runs out of budget still integrates what it found instead of only
+	// joining it: when the root's chosen plan could not be synthesized
+	// within the rest, it is synthesized again on the reserve. Every other
+	// call counts the budget as exhausted once the rest is used. A root
+	// executed directly releases the reserve. Default 0.15; negative for
+	// none.
 	SynthesisReserve float64
 	// MaxConcurrency is the number of model calls in flight at once. Default 4.
 	MaxConcurrency int
@@ -91,10 +93,12 @@ func (b Budget) withDefaults() Budget {
 
 // limits returns the tokens open to every call and those open to the
 // root's synthesis, which may also use the reserve. Zero means unlimited.
+// A reserve of the whole budget leaves a single token to the other calls,
+// never an unlimited allowance.
 func (b Budget) limits() (general, synthesis int) {
 	if b.MaxTokens <= 0 {
 		return 0, 0
 	}
 	held := int(float64(b.MaxTokens) * min(max(b.SynthesisReserve, 0), 1))
-	return b.MaxTokens - held, b.MaxTokens
+	return max(b.MaxTokens-held, 1), b.MaxTokens
 }
