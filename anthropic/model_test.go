@@ -214,8 +214,8 @@ func TestWebSearchReservesItsResults(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(asked) != 1 || asked[0] != 30_000 {
-		t.Errorf("reserved %v, want [30000] for 3 searches", asked)
+	if len(asked) != 1 || asked[0] != 60_000 {
+		t.Errorf("reserved %v, want [60000] for 3 searches", asked)
 	}
 
 	asked = nil

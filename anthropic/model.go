@@ -26,9 +26,11 @@ var ErrRefused = errors.New("anthropic: request refused")
 const maxContinuations = 5
 
 // Web search results enter the input on the server, out of the caller's
-// sight, so each call reserves this many tokens per allowed search.
+// sight, so each call reserves this many tokens per allowed search. The
+// server rereads the growing context after every search: a call with five
+// searches was measured at about 90,000 input tokens.
 const (
-	searchTokensPerUse = 10_000
+	searchTokensPerUse = 20_000
 	defaultSearchUses  = 5
 )
 
