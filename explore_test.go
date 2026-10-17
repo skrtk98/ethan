@@ -409,14 +409,14 @@ func TestBudgetExhaustionKeepsCompletedSubtasks(t *testing.T) {
 }
 
 func TestPartialResultsPropagateThroughLevels(t *testing.T) {
-	// The root's single subtask X is decomposed into Y and Z; Z never fits.
+	// The root's single subtask X is decomposed into Y and then Z; Z never fits.
 	m := ethantest.New().
 		On(ethan.TagPlan, func(req ethan.Request) (*ethan.Response, error) {
 			switch taskOf(req) {
 			case "goal":
 				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("p", sub{ID: "x", Description: "X"})}}), nil
 			case "X":
-				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("q", sub{ID: "y", Description: "Y"}, sub{ID: "z", Description: "Z"})}}), nil
+				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("q", sub{ID: "y", Description: "Y"}, sub{ID: "z", Description: "Z", DependsOn: []string{"y"}})}}), nil
 			}
 			return ethantest.JSON(ethan.Decision{Atomic: true}), nil
 		}).
