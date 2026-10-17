@@ -29,7 +29,7 @@ func main() {
 		plans       = flag.Int("plans", 3, "alternative plans proposed per task")
 		beam        = flag.Int("beam", 2, "plans executed in parallel at the root")
 		deepBeam    = flag.Int("deep-beam", 1, "plans executed in parallel below the root")
-		searches    = flag.Int("searches", 3, "web searches allowed per model call")
+		searches    = flag.Int("searches", 5, "web searches allowed per model call")
 		quiet       = flag.Bool("q", false, "do not print progress to stderr")
 	)
 	flag.Usage = func() {
