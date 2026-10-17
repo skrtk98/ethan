@@ -139,7 +139,8 @@ func TestToolLoopReplaysThinkingBlocks(t *testing.T) {
 
 func TestPausedTurnIsResumed(t *testing.T) {
 	f := &fakeAPI{responses: []string{
-		message("pause_turn", `{"type":"server_tool_use","id":"srv-1","name":"web_search","input":{"query":"q"}}`),
+		message("pause_turn", `{"type":"text","text":"Searching."},
+			{"type":"server_tool_use","id":"srv-1","name":"web_search","input":{"query":"q"}}`),
 		message("end_turn", `{"type":"text","text":"answer"}`),
 	}}
 	m := newModel(t, f, anthropic.WithoutFallbacks())

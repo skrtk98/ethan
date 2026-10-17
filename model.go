@@ -105,10 +105,18 @@ type Response struct {
 	Usage  Usage
 }
 
-// Text concatenates the text parts of the response.
+// Text concatenates the text parts after the last part that is not text,
+// such as a tool call or a provider block for a server-side tool. That is
+// the model's final answer, without what it said between tool uses.
 func (r *Response) Text() string {
+	start := 0
+	for i, p := range r.Parts {
+		if p.Text == "" {
+			start = i + 1
+		}
+	}
 	var b strings.Builder
-	for _, p := range r.Parts {
+	for _, p := range r.Parts[start:] {
 		b.WriteString(p.Text)
 	}
 	return b.String()
