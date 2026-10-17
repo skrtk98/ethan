@@ -1,0 +1,291 @@
+package ethan_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/skrtk98/ethan"
+	"github.com/skrtk98/ethan/ethantest"
+)
+
+type sub = ethan.SubtaskProposal
+
+func plan(rationale string, subtasks ...sub) ethan.PlanProposal {
+	return ethan.PlanProposal{Rationale: rationale, Subtasks: subtasks}
+}
+
+// decomposeRoot makes the planner decompose the root into plans and treat
+// every other task as atomic.
+func decomposeRoot(plans ...ethan.PlanProposal) ethantest.Handler {
+	return func(req ethan.Request) (*ethan.Response, error) {
+		if strings.Contains(ethantest.Prompt(req), "<ancestors>") {
+			return ethantest.JSON(ethan.Decision{Atomic: true}), nil
+		}
+		return ethantest.JSON(ethan.Decision{Plans: plans}), nil
+	}
+}
+
+var taskRe = regexp.MustCompile(`(?s)<task>\n(.*?)\n</task>`)
+
+func taskOf(req ethan.Request) string {
+	m := taskRe.FindStringSubmatch(ethantest.Prompt(req))
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+// echoTask answers each execution with "out(<task>)".
+func echoTask(req ethan.Request) (*ethan.Response, error) {
+	return ethantest.Text("out(" + taskOf(req) + ")"), nil
+}
+
+// joinResults synthesizes by concatenating the subtask outputs.
+func joinResults(req ethan.Request) (*ethan.Response, error) {
+	outs := regexp.MustCompile(`out\([^)]*\)`).FindAllString(ethantest.Prompt(req), -1)
+	return ethantest.Text(strings.Join(outs, "+")), nil
+}
+
+func TestDecompositionRunsDependenciesInOrderAndSynthesizes(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("only",
+			sub{ID: "a", Description: "A"},
+			sub{ID: "b", Description: "B", DependsOn: []string{"a"}},
+		))).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults)
+
+	res, err := ethan.New(m).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Output != "out(A)+out(B)" {
+		t.Errorf("Output = %q", res.Output)
+	}
+	for _, c := range m.Calls(ethan.TagExecute) {
+		if taskOf(c) == "B" && !strings.Contains(ethantest.Prompt(c), "out(A)") {
+			t.Error("B was not given A's output")
+		}
+	}
+	if res.Root.Chosen != res.Root.Plans[0].ID {
+		t.Errorf("Chosen = %q", res.Root.Chosen)
+	}
+	b := res.Root.Plans[0].Subtasks[1]
+	if b.Depth != 1 || len(b.DependsOn) != 1 || b.DependsOn[0] != res.Root.Plans[0].Subtasks[0].ID {
+		t.Errorf("subtask B = %+v", b)
+	}
+}
+
+func TestIndependentSubtasksRunInParallel(t *testing.T) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			wg.Done()
+			done := make(chan struct{})
+			go func() { wg.Wait(); close(done) }()
+			select {
+			case <-done:
+				return echoTask(req)
+			case <-time.After(2 * time.Second):
+				return nil, errors.New("subtasks did not run concurrently")
+			}
+		}).
+		On(ethan.TagSynthesize, joinResults)
+
+	if _, err := ethan.New(m).Run(context.Background(), "goal"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// scoreBy scores plans and results by looking up a keyword in the prompt.
+func scoreBy(scores map[string]float64) ethantest.Handler {
+	return func(req ethan.Request) (*ethan.Response, error) {
+		p := ethantest.Prompt(req)
+		for k, v := range scores {
+			if strings.Contains(p, k) {
+				return ethantest.JSON(ethan.Score{Value: v, Reason: k}), nil
+			}
+		}
+		return nil, fmt.Errorf("no score for prompt %q", p)
+	}
+}
+
+func threePlans() ethantest.Handler {
+	return decomposeRoot(
+		plan("plan-low", sub{ID: "x", Description: "LOW"}),
+		plan("plan-high", sub{ID: "x", Description: "HIGH"}),
+		plan("plan-mid", sub{ID: "x", Description: "MID"}),
+	)
+}
+
+func TestBeamExecutesTopPlansAndChoosesBestResult(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, threePlans()).
+		On(ethan.TagScorePlan, scoreBy(map[string]float64{"plan-low": 0.1, "plan-high": 0.9, "plan-mid": 0.5})).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults).
+		On(ethan.TagScoreResult, scoreBy(map[string]float64{"out(HIGH)": 0.3, "out(MID)": 0.8}))
+
+	res, err := ethan.New(m, ethan.WithStrategy(ethan.BeamStrategy{Width: 2})).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Output != "out(MID)" {
+		t.Errorf("Output = %q, want out(MID)", res.Output)
+	}
+	statuses := map[string]ethan.Status{}
+	for _, p := range res.Root.Plans {
+		statuses[p.Rationale] = p.Status
+	}
+	want := map[string]ethan.Status{"plan-low": ethan.StatusPruned, "plan-high": ethan.StatusDone, "plan-mid": ethan.StatusDone}
+	for k, v := range want {
+		if statuses[k] != v {
+			t.Errorf("%s status = %s, want %s", k, statuses[k], v)
+		}
+	}
+	if res.Score == nil || res.Score.Value != 0.8 {
+		t.Errorf("Score = %+v", res.Score)
+	}
+}
+
+func TestBeamBacktracksToRemainingPlansOnFailure(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, threePlans()).
+		On(ethan.TagScorePlan, scoreBy(map[string]float64{"plan-low": 0.1, "plan-high": 0.9, "plan-mid": 0.5})).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			if taskOf(req) == "LOW" {
+				return echoTask(req)
+			}
+			return nil, errors.New("boom")
+		}).
+		On(ethan.TagSynthesize, joinResults)
+
+	res, err := ethan.New(m, ethan.WithStrategy(ethan.BeamStrategy{Width: 2})).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Output != "out(LOW)" {
+		t.Errorf("Output = %q", res.Output)
+	}
+}
+
+func TestRunFailsWhenAllPlansFail(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, threePlans()).
+		On(ethan.TagScorePlan, scoreBy(map[string]float64{"plan": 0.5}))
+
+	res, err := ethan.New(m).Run(context.Background(), "goal")
+	if err == nil {
+		t.Fatal("want error")
+	}
+	for _, p := range res.Root.Plans {
+		if p.Status != ethan.StatusFailed {
+			t.Errorf("plan %s status = %s", p.ID, p.Status)
+		}
+	}
+}
+
+func TestInvalidPlansAreDroppedAndTaskFallsBackToDirectExecution(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(
+			plan("cycle", sub{ID: "a", Description: "A", DependsOn: []string{"b"}}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}}),
+			plan("dangling", sub{ID: "a", Description: "A", DependsOn: []string{"zzz"}}),
+			plan("empty"),
+		)).
+		On(ethan.TagExecute, echoTask)
+
+	res, err := ethan.New(m).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Root.Atomic || res.Output != "out(goal)" {
+		t.Errorf("root = %+v", res.Root)
+	}
+}
+
+func TestMaxDepthStopsDecomposition(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, ethantest.ReplyJSON(ethan.Decision{Plans: []ethan.PlanProposal{
+			plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}),
+		}})).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults)
+
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1})).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(m.Calls(ethan.TagPlan)); n != 1 {
+		t.Errorf("planner called %d times, want 1", n)
+	}
+	if res.Output != "out(A)+out(B)" {
+		t.Errorf("Output = %q", res.Output)
+	}
+}
+
+func TestTokenBudgetFallsBackToJoinedResults(t *testing.T) {
+	// Each call costs 20 tokens: plan(root), plan(A), plan(B), execute(A),
+	// execute(B) spend 100, so synthesis is refused.
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults)
+
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 100})).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Exhausted {
+		t.Error("Exhausted = false")
+	}
+	if !strings.Contains(res.Output, "out(A)") || !strings.Contains(res.Output, "out(B)") {
+		t.Errorf("Output = %q", res.Output)
+	}
+	if len(m.Calls(ethan.TagSynthesize)) != 0 {
+		t.Error("synthesis was called despite the exhausted budget")
+	}
+}
+
+func TestTokenBudgetExhaustedBeforeAnyResultFails(t *testing.T) {
+	m := ethantest.New().On(ethan.TagPlan, threePlans()).On(ethan.TagExecute, echoTask)
+
+	_, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 20})).Run(context.Background(), "goal")
+	if !errors.Is(err, ethan.ErrBudgetExhausted) {
+		t.Fatalf("err = %v, want ErrBudgetExhausted", err)
+	}
+}
+
+func TestMaxConcurrencyLimitsModelCalls(t *testing.T) {
+	var inFlight, peak atomic.Int32
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}, sub{ID: "c", Description: "C"}))).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			n := inFlight.Add(1)
+			defer inFlight.Add(-1)
+			for {
+				p := peak.Load()
+				if n <= p || peak.CompareAndSwap(p, n) {
+					break
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+			return echoTask(req)
+		}).
+		On(ethan.TagSynthesize, joinResults)
+
+	if _, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxConcurrency: 1})).Run(context.Background(), "goal"); err != nil {
+		t.Fatal(err)
+	}
+	if peak.Load() != 1 {
+		t.Errorf("peak concurrency = %d, want 1", peak.Load())
+	}
+}

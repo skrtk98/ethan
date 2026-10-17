@@ -10,13 +10,13 @@ import (
 	"github.com/skrtk98/ethan/ethantest"
 )
 
-func atomic() ethantest.Handler {
+func atomicPlan() ethantest.Handler {
 	return ethantest.ReplyJSON(map[string]any{"atomic": true})
 }
 
 func TestRunExecutesAtomicGoalDirectly(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, atomic()).
+		On(ethan.TagPlan, atomicPlan()).
 		On(ethan.TagExecute, ethantest.ReplyText("42")).
 		On(ethan.TagScoreResult, ethantest.ReplyJSON(ethan.Score{Value: 0.9, Reason: "ok"}))
 
@@ -50,7 +50,7 @@ func (echoTool) Call(_ context.Context, in json.RawMessage) (string, error) {
 
 func TestAgentRunsToolLoop(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, atomic()).
+		On(ethan.TagPlan, atomicPlan()).
 		On(ethan.TagScoreResult, ethantest.ReplyJSON(ethan.Score{Value: 1})).
 		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
 			last := req.Messages[len(req.Messages)-1]
@@ -73,7 +73,7 @@ func TestAgentRunsToolLoop(t *testing.T) {
 }
 
 func TestRunFailsWhenExecutionFails(t *testing.T) {
-	m := ethantest.New().On(ethan.TagPlan, atomic()) // no execute handler
+	m := ethantest.New().On(ethan.TagPlan, atomicPlan()) // no execute handler
 
 	res, err := ethan.New(m).Run(context.Background(), "goal")
 	if err == nil {
