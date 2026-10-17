@@ -8,7 +8,8 @@ Given a goal, ethan grows an AND-OR task tree at runtime:
 - A **plan** (AND node) splits the task into subtasks with dependencies. Independent subtasks run in parallel. When all of them finish, their results are synthesized into the task's result.
 - A **strategy** decides which plans to try. The default beam strategy scores the candidates, executes the best ones in parallel, adopts the best-scoring result and backtracks to the remaining plans on failure.
 - **Agents** with their own instructions, models and tools execute the leaves, and share findings through a per-run **blackboard**.
-- A **budget** bounds depth, node count, tokens and concurrent model calls. Every step is reported as an **event** and recorded in a JSON **trace**.
+- A **budget** bounds depth, the number of tasks, tokens and concurrent model calls. Model calls reserve their estimated tokens before they start. When the budget runs out, the run stops starting new work and returns a **partial** result built from what finished, naming what is missing.
+- Every step is reported as an **event** and recorded in a JSON **trace**.
 
 > Status: experimental. The API may change.
 
@@ -66,7 +67,7 @@ Progress is printed to stderr. `trace.json` contains the whole explored tree, in
 | Planner       | `Planner`     | `LLMPlanner`                           | `WithPlanner`       |
 | Evaluator     | `Evaluator`   | `LLMEvaluator` (LLM as judge)          | `WithEvaluator`     |
 | Synthesizer   | `Synthesizer` | `LLMSynthesizer`                       | `WithSynthesizer`   |
-| Strategy      | `Strategy`    | `BeamStrategy{Width: 2}`               | `WithStrategy`      |
+| Strategy      | `Strategy`    | `BeamStrategy` (2 plans at the root, 1 below) | `WithStrategy` |
 | Agents        | `Agent`       | one generalist                         | `WithAgents`        |
 | Observer      | `Observer`    | none                                   | `WithObserver`      |
 

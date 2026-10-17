@@ -23,12 +23,13 @@ func main() {
 		model       = flag.String("model", anthropic.DefaultModel, "Claude model id")
 		effort      = flag.String("effort", "", "effort level: low, medium, high, xhigh or max")
 		maxDepth    = flag.Int("max-depth", 2, "depth at which tasks are no longer decomposed")
-		maxNodes    = flag.Int("max-nodes", 30, "solved tasks after which decomposition stops")
+		maxNodes    = flag.Int("max-nodes", 15, "tasks the run may start, leaves included")
 		maxTokens   = flag.Int("max-tokens", 1_000_000, "total token budget (0 = unlimited)")
 		concurrency = flag.Int("concurrency", 4, "model calls in flight at once")
 		plans       = flag.Int("plans", 3, "alternative plans proposed per task")
-		beam        = flag.Int("beam", 2, "plans executed in parallel per task")
-		searches    = flag.Int("searches", 5, "web searches allowed per model call")
+		beam        = flag.Int("beam", 2, "plans executed in parallel at the root")
+		deepBeam    = flag.Int("deep-beam", 1, "plans executed in parallel below the root")
+		searches    = flag.Int("searches", 3, "web searches allowed per model call")
 		quiet       = flag.Bool("q", false, "do not print progress to stderr")
 	)
 	flag.Usage = func() {
@@ -69,7 +70,7 @@ func main() {
 		),
 		ethan.WithBudget(ethan.Budget{MaxDepth: *maxDepth, MaxNodes: *maxNodes, MaxTokens: *maxTokens, MaxConcurrency: *concurrency}),
 		ethan.WithMaxPlans(*plans),
-		ethan.WithStrategy(ethan.BeamStrategy{Width: *beam}),
+		ethan.WithStrategy(ethan.BeamStrategy{Width: *beam, DeepWidth: *deepBeam}),
 	}
 	if !*quiet {
 		opts = append(opts, ethan.WithObserver(ethan.ObserverFunc(progress)))
@@ -85,8 +86,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	if res.Exhausted {
-		fmt.Fprintln(os.Stderr, "warning: token budget exhausted; the report may be incomplete")
+	switch {
+	case res.Partial:
+		fmt.Fprintln(os.Stderr, "warning: the budget ran out; the report is partial and names what is missing")
+	case res.Exhausted:
+		fmt.Fprintln(os.Stderr, "warning: the budget ran out; parts of the report may be less refined")
 	}
 	fmt.Fprintf(os.Stderr, "tokens: %d in, %d out\n", res.Usage.InputTokens, res.Usage.OutputTokens)
 
