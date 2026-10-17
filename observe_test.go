@@ -139,4 +139,7 @@ func TestWriteTraceProducesJSON(t *testing.T) {
 	if trace.Goal != "goal" || trace.Output != "done" || trace.Root.ID != "t0" || len(trace.Events) == 0 || trace.Usage.Total() == 0 {
 		t.Errorf("trace = %+v", trace)
 	}
+	if !bytes.Contains(buf.Bytes(), []byte(`"notes": []`)) {
+		t.Error("a run without notes must write an empty list, not null")
+	}
 }

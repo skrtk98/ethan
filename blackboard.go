@@ -44,7 +44,7 @@ func (b *Blackboard) Recent(n int) []Note {
 func (b *Blackboard) Notes() []Note {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return append([]Note(nil), b.notes...)
+	return append([]Note{}, b.notes...)
 }
 
 const noteToolName = "note"
