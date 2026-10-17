@@ -95,8 +95,9 @@ func (s BeamStrategy) Explore(ctx context.Context, x Exploration) (*Plan, error)
 	return nil, errors.Join(errs...)
 }
 
-// best returns the highest-scoring of the succeeded plans, preferring
-// complete ones and scoring results only when there is a choice to make.
+// best returns the highest-scoring of the succeeded plans, scoring results
+// only when there is a choice to make. A complete plan beats a partial one
+// whatever the scores.
 func best(ctx context.Context, x Exploration, ok []*Plan) *Plan {
 	if complete := slices.DeleteFunc(slices.Clone(ok), func(p *Plan) bool { return p.Status != StatusDone }); len(complete) > 0 {
 		ok = complete
@@ -116,18 +117,22 @@ func best(ctx context.Context, x Exploration, ok []*Plan) *Plan {
 	return ok[bi]
 }
 
-// finished is the fraction of p's subtasks that produced a result.
+// finished is the fraction of p's subtasks that were done, a partial one
+// counting half.
 func finished(p *Plan) float64 {
 	if len(p.Subtasks) == 0 {
 		return 0
 	}
-	n := 0
+	n := 0.0
 	for _, st := range p.Subtasks {
-		if st.Status.usable() {
+		switch st.Status {
+		case StatusDone:
 			n++
+		case StatusPartial:
+			n += 0.5
 		}
 	}
-	return float64(n) / float64(len(p.Subtasks))
+	return n / float64(len(p.Subtasks))
 }
 
 func value(s *Score) float64 {

@@ -76,6 +76,19 @@ func TestBestPrefersTheMoreFinishedPlanWhenScoresTie(t *testing.T) {
 	}
 }
 
+func TestPartialSubtasksCountHalf(t *testing.T) {
+	plan := func(statuses ...Status) *Plan {
+		p := &Plan{}
+		for _, s := range statuses {
+			p.Subtasks = append(p.Subtasks, &Task{Status: s})
+		}
+		return p
+	}
+	if got := finished(plan(StatusDone, StatusPartial, StatusPartial, StatusFailed)); got != 0.5 {
+		t.Errorf("finished = %v, want 0.5", got)
+	}
+}
+
 func TestWholeBudgetReserveIsNotUnlimited(t *testing.T) {
 	for _, share := range []float64{1, 2} {
 		general, all := Budget{MaxTokens: 100, SynthesisReserve: share}.limits()

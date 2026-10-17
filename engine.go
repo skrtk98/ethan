@@ -419,6 +419,7 @@ func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []Su
 		// No plan of the root will need the synthesis reserve.
 		r.mu.Lock()
 		r.noReserve = true
+		r.exhausted = r.spent.Total() >= r.limit(false)
 		r.mu.Unlock()
 	}
 	return r.executeLeaf(ctx, t, b)
@@ -530,8 +531,8 @@ func (r *run) explore(ctx context.Context, t *Task, b Brief, plans []*Plan) erro
 		switch {
 		case err == nil:
 			p.Output, p.joined = out, nil
-		case ctx.Err() != nil:
-			return ctx.Err()
+		case !errors.Is(err, ErrBudgetExhausted):
+			return fmt.Errorf("synthesize: %w", err)
 		}
 	}
 	t.Chosen, t.Output, t.Score = p.ID, p.Output, p.ResultScore
