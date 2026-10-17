@@ -27,20 +27,29 @@ type Budget struct {
 	// and is refused with ErrBudgetExhausted if the reservation does not fit.
 	// The Run then returns the best result it can assemble. Zero means
 	// unlimited.
+	//
+	// The cap is only as tight as the estimates: a call that uses more than
+	// it reserved (an unusual tokenization, server-side tool results larger
+	// than the adapter allowed for) can carry the total past MaxTokens, after
+	// which no further call starts.
 	MaxTokens int
 	// MaxConcurrency is the number of model calls in flight at once. Default 4.
 	MaxConcurrency int
 }
 
-// estimateTokens is the default upper estimate of a request's tokens: about
-// one token per three bytes of input (generous for English, about right for
-// Japanese) plus the output limit.
+// estimateTokens is the default estimate of a request's tokens: one token
+// per two bytes of everything sent (about double for English, generous for
+// Japanese), a small overhead per message, and the output limit.
 func estimateTokens(req Request) int {
 	n := len(req.System)
+	if req.Output != nil {
+		n += len(req.Output.Name) + len(req.Output.Description) + len(req.Output.Schema)
+	}
 	for _, t := range req.Tools {
 		n += len(t.Name) + len(t.Description) + len(t.InputSchema)
 	}
 	for _, m := range req.Messages {
+		n += 32
 		for _, p := range m.Parts {
 			n += len(p.Text)
 			switch {
@@ -55,7 +64,7 @@ func estimateTokens(req Request) int {
 			}
 		}
 	}
-	return n/3 + req.MaxTokens
+	return n/2 + req.MaxTokens
 }
 
 func (b Budget) withDefaults() Budget {

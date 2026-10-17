@@ -36,10 +36,11 @@ type Request struct {
 	// Output, when set, asks the model for a JSON value matching the schema
 	// instead of free text. The value is returned in Response.Output.
 	Output *OutputSchema
-	// Reserve, when set, must be called by an adapter before each additional
-	// underlying API call it makes for this request (e.g. to resume a paused
-	// turn), with an upper estimate of that call's tokens. The first call is
-	// reserved by the caller. If Reserve fails, the adapter must not make the
+	// Reserve, when set, must be called by an adapter for tokens the caller
+	// cannot see in the request: each additional underlying API call (e.g.
+	// to resume a paused turn), and input the provider adds on its own (e.g.
+	// server-side tool results). The caller has already reserved an estimate
+	// of the request itself. If Reserve fails, the adapter must not make the
 	// call and must return the error.
 	Reserve func(tokens int) error
 }

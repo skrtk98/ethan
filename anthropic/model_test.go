@@ -198,3 +198,33 @@ func TestContinuationIsReservedAndRefusalKeepsUsage(t *testing.T) {
 		t.Errorf("usage of the first call was lost: %+v", resp)
 	}
 }
+
+func TestWebSearchReservesItsResults(t *testing.T) {
+	f := &fakeAPI{responses: []string{
+		message("end_turn", `{"type":"text","text":"found"}`),
+		message("end_turn", `{"type":"text","text":"{}"}`),
+	}}
+	m := newModel(t, f, anthropic.WithWebSearch(3))
+	var asked []int
+	reserve := func(tokens int) error { asked = append(asked, tokens); return nil }
+
+	if _, err := m.Generate(context.Background(), ethan.Request{
+		Messages: []ethan.Message{ethan.UserText("search")}, MaxTokens: 100, Reserve: reserve,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 1 || asked[0] != 30_000 {
+		t.Errorf("reserved %v, want [30000] for 3 searches", asked)
+	}
+
+	asked = nil
+	if _, err := m.Generate(context.Background(), ethan.Request{
+		Messages: []ethan.Message{ethan.UserText("judge")}, MaxTokens: 100, Reserve: reserve,
+		Output: &ethan.OutputSchema{Name: "o", Schema: json.RawMessage(`{"type":"object"}`)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 0 {
+		t.Errorf("structured-output call without search reserved %v", asked)
+	}
+}

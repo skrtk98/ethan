@@ -2,6 +2,7 @@
 package anthropic
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,13 @@ var ErrRefused = errors.New("anthropic: request refused")
 
 // maxContinuations bounds how often a paused server-side tool loop is resumed.
 const maxContinuations = 5
+
+// Web search results enter the input on the server, out of the caller's
+// sight, so each call reserves this many tokens per allowed search.
+const (
+	searchTokensPerUse = 10_000
+	defaultSearchUses  = 5
+)
 
 // Model is an ethan.Model backed by the Claude Messages API.
 // It is safe for concurrent use.
@@ -81,6 +89,12 @@ func (m *Model) Generate(ctx context.Context, req ethan.Request) (*ethan.Respons
 		return nil, err
 	}
 	out := &ethan.Response{}
+	if m.searches(req) && req.Reserve != nil {
+		uses := cmp.Or(int(m.webSearchUses), defaultSearchUses)
+		if err := req.Reserve(uses * searchTokensPerUse); err != nil {
+			return out, err
+		}
+	}
 	for i := range maxContinuations {
 		// The resumed call resends everything so far, which the usage so far bounds.
 		if i > 0 && req.Reserve != nil {
@@ -147,9 +161,7 @@ func (m *Model) params(req ethan.Request) (sdk.BetaMessageNewParams, error) {
 		}
 		p.Tools = append(p.Tools, t)
 	}
-	// Web search would let structured-output calls wander off; only tool-using
-	// calls (agents) get it.
-	if m.webSearch && req.Output == nil {
+	if m.searches(req) {
 		ws := &sdk.BetaWebSearchTool20260209Param{}
 		if m.webSearchUses > 0 {
 			ws.MaxUses = param.NewOpt(m.webSearchUses)
@@ -158,6 +170,10 @@ func (m *Model) params(req ethan.Request) (sdk.BetaMessageNewParams, error) {
 	}
 	return p, nil
 }
+
+// searches reports whether req is offered web search. Structured-output
+// calls are not: search would let them wander off.
+func (m *Model) searches(req ethan.Request) bool { return m.webSearch && req.Output == nil }
 
 func messageParam(msg ethan.Message) (sdk.BetaMessageParam, error) {
 	var blocks []sdk.BetaContentBlockParamUnion
