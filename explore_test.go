@@ -359,6 +359,36 @@ func TestFailedReserveSynthesisIsAnError(t *testing.T) {
 	}
 }
 
+// refusingSynthesizer is refused for budget on every call.
+type refusingSynthesizer struct{ calls atomic.Int32 }
+
+func (s *refusingSynthesizer) Synthesize(context.Context, ethan.Brief, []ethan.SubtaskResult) (string, error) {
+	s.calls.Add(1)
+	return "", ethan.ErrBudgetExhausted
+}
+
+func TestCancellationBeforeReserveSynthesisIsAFailure(t *testing.T) {
+	// The caller cancels once the root's plan is done but only joined; the
+	// retry on the reserve is refused for budget, which must not hide the
+	// cancellation.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagExecute, echoTask)
+	syn := &refusingSynthesizer{}
+	cancelOnDone := ethan.WithObserver(ethan.ObserverFunc(func(e ethan.Event) {
+		if e.Kind == ethan.EventPlanDone && e.PlanID == "t0.p1" {
+			cancel()
+		}
+	}))
+
+	_, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1}), ethan.WithSynthesizer(syn), cancelOnDone).Run(ctx, "goal")
+	if !errors.Is(err, context.Canceled) || syn.calls.Load() != 2 {
+		t.Errorf("err = %v after %d syntheses, want context.Canceled after the retry", err, syn.calls.Load())
+	}
+}
+
 func TestSynthesisBelowTheRootLeavesTheReserveAlone(t *testing.T) {
 	// X is decomposed into Y and Z. The plan calls for the root and X and
 	// the executions of Y and Z use the 80 general tokens, so X's synthesis

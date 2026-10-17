@@ -533,6 +533,8 @@ func (r *run) explore(ctx context.Context, t *Task, b Brief, plans []*Plan) erro
 			p.Output, p.joined = out, nil
 		case !errors.Is(err, ErrBudgetExhausted):
 			return fmt.Errorf("synthesize: %w", err)
+		case ctx.Err() != nil:
+			return ctx.Err()
 		}
 	}
 	t.Chosen, t.Output, t.Score = p.ID, p.Output, p.ResultScore
