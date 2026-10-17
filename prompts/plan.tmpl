@@ -8,7 +8,8 @@ Assign each subtask to one of the available agents.
 Write subtask descriptions so they are self-contained and actionable.
 
 Decomposition multiplies cost: every subtask is a separate agent run, and alternative plans may run in parallel.
-Choose atomic=true unless the task clearly needs several distinct efforts.
+At the root (depth 0), decompose when the task covers several distinct subjects, perspectives or sources,
+such as comparing options or researching more than one question; choose atomic=true only for a single focused question.
 Below the root, decompose only when a single agent truly cannot do the task, and the deeper the task, the stronger this preference.
 Never propose more subtasks in a plan than the tasks that may still start.
 
