@@ -475,3 +475,49 @@ func TestDecompositionNeedsRoomForTwoNodes(t *testing.T) {
 		t.Errorf("root decomposed with room for only one more task")
 	}
 }
+
+func TestBeamRunsOnePlanAtATimeBelowRoot(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, func(req ethan.Request) (*ethan.Response, error) {
+			switch taskOf(req) {
+			case "goal":
+				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("p", sub{ID: "x", Description: "X"})}}), nil
+			case "X":
+				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{
+					plan("first", sub{ID: "y", Description: "Y1"}),
+					plan("second", sub{ID: "y", Description: "Y2"}),
+				}}), nil
+			}
+			return ethantest.JSON(ethan.Decision{Atomic: true}), nil
+		}).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults)
+
+	res, err := ethan.New(m).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := res.Root.Plans[0].Subtasks[0]
+	if x.Plans[0].Status != ethan.StatusDone || x.Plans[1].Status != ethan.StatusPruned {
+		t.Errorf("X's plans: %s, %s; want done, pruned", x.Plans[0].Status, x.Plans[1].Status)
+	}
+	if len(m.Calls(ethan.TagScoreResult)) != 0 {
+		t.Error("results were scored although only one plan ran")
+	}
+}
+
+func TestPlannerSeesDepthAndBudget(t *testing.T) {
+	m := ethantest.New().On(ethan.TagPlan, atomicPlan()).On(ethan.TagExecute, echoTask)
+
+	_, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 3, MaxNodes: 9, MaxTokens: 1000}), flatCost).
+		Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := ethantest.Prompt(m.Calls(ethan.TagPlan)[0])
+	for _, want := range []string{"Depth: 0 (tasks at depth 3", "Tasks that may still start: 8", "Tokens left: about 1000"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("planner prompt lacks %q:\n%s", want, p)
+		}
+	}
+}

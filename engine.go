@@ -295,6 +295,19 @@ func (r *run) agentInfos() []AgentInfo {
 	return infos
 }
 
+func (r *run) planRequest(t *Task, b Brief) PlanRequest {
+	budget := r.engine.budget
+	req := PlanRequest{Brief: b, Agents: r.agentInfos(), MaxPlans: r.engine.maxPlans,
+		Depth: t.Depth, MaxDepth: budget.MaxDepth, RemainingTokens: -1}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	req.RemainingNodes = budget.MaxNodes - r.nodes
+	if budget.MaxTokens > 0 {
+		req.RemainingTokens = max(budget.MaxTokens-r.spent.Total()-r.reserved, 0)
+	}
+	return req
+}
+
 // takeNode counts a task about to start against Budget.MaxNodes.
 func (r *run) takeNode() error {
 	r.mu.Lock()
@@ -347,7 +360,7 @@ func (r *run) solve(ctx context.Context, t *Task, path []string, inputs []Subtas
 func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []SubtaskResult) error {
 	b := Brief{Goal: r.goal, Path: path, Task: t.Description, Inputs: inputs, Notes: r.board.Recent(r.engine.notesInPrompt)}
 	if r.canDecompose(t) {
-		d, err := r.planner.Plan(ctx, PlanRequest{Brief: b, Agents: r.agentInfos(), MaxPlans: r.engine.maxPlans})
+		d, err := r.planner.Plan(ctx, r.planRequest(t, b))
 		switch {
 		case errors.Is(err, ErrBudgetExhausted) || ctx.Err() != nil:
 			return fmt.Errorf("plan: %w", err)
@@ -479,6 +492,8 @@ type exploration struct {
 }
 
 func (x *exploration) Plans() []*Plan { return x.plans }
+
+func (x *exploration) Depth() int { return x.task.Depth }
 
 func (x *exploration) ScorePlan(ctx context.Context, p *Plan) *Score {
 	s, err := x.run.evaluator.ScorePlan(ctx, x.brief, proposalOf(p))

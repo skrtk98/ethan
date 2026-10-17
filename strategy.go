@@ -20,6 +20,8 @@ type Strategy interface {
 // Its methods are safe to call concurrently for different plans.
 type Exploration interface {
 	Plans() []*Plan
+	// Depth is the depth of the task whose plans these are; the root is 0.
+	Depth() int
 	// ScorePlan evaluates p before execution and records it on p.
 	// It returns nil if the evaluation failed.
 	ScorePlan(ctx context.Context, p *Plan) *Score
@@ -34,20 +36,26 @@ type Exploration interface {
 	Prune(p *Plan)
 }
 
-// BeamStrategy is the default Strategy. When there are more plans than
-// Width, it scores them all and ranks them. It then executes the plans in
-// batches of Width, in parallel, and adopts the best-scoring result of the
-// first batch in which any plan succeeds. Later plans are pruned.
+// BeamStrategy is the default Strategy. When there are more plans than the
+// width, it scores them all and ranks them. It then executes the plans in
+// batches of the width, in parallel, and adopts the best-scoring result of
+// the first batch in which any plan succeeds. Later plans are pruned.
+//
+// Every plan run in parallel multiplies the cost of the subtree below it,
+// so by default only the root compares plans side by side; deeper tasks run
+// one plan at a time and keep the others for backtracking.
 type BeamStrategy struct {
-	// Width is the number of plans executed in parallel. Default 2.
+	// Width is the number of plans executed in parallel at the root. Default 2.
 	Width int
+	// DeepWidth is the number executed in parallel below the root. Default 1.
+	DeepWidth int
 }
 
 // Explore implements Strategy.
 func (s BeamStrategy) Explore(ctx context.Context, x Exploration) (*Plan, error) {
-	width := s.Width
-	if width <= 0 {
-		width = 2
+	width := cmp.Or(max(s.Width, 0), 2)
+	if x.Depth() > 0 {
+		width = cmp.Or(max(s.DeepWidth, 0), 1)
 	}
 	plans := slices.Clone(x.Plans())
 	if len(plans) > width {

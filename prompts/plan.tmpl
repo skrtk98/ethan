@@ -7,8 +7,20 @@ Subtasks may depend on other subtasks of the same plan by id; independent subtas
 Assign each subtask to one of the available agents.
 Write subtask descriptions so they are self-contained and actionable.
 
+Decomposition multiplies cost: every subtask is a separate agent run, and alternative plans may run in parallel.
+Choose atomic=true unless the task clearly needs several distinct efforts.
+Below the root, decompose only when a single agent truly cannot do the task, and the deeper the task, the stronger this preference.
+Never propose more subtasks in a plan than the tasks that may still start.
+
 Available agents:
 {{- range .Agents}}
 - {{.Name}}: {{.Description}}
 {{- end}}{{end}}
-{{define "user"}}{{template "brief" .Brief}}{{end}}
+{{define "user"}}{{template "brief" .Brief}}
+<budget>
+Depth: {{.Depth}} (tasks at depth {{.MaxDepth}} are always executed directly)
+Tasks that may still start: {{.RemainingNodes}}
+{{- if ge .RemainingTokens 0}}
+Tokens left: about {{.RemainingTokens}}
+{{- end}}
+</budget>{{end}}
