@@ -2,12 +2,15 @@ package ethan
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strconv"
 	"sync"
 	"text/template"
+	"time"
 )
 
 // Engine explores a goal by building and solving an AND-OR task tree.
@@ -21,6 +24,8 @@ type Engine struct {
 	strategy        Strategy
 	budget          Budget
 	executeTemplate *template.Template
+	observers       []Observer
+	notesInPrompt   int
 	maxPlans        int
 	maxTokens       int
 }
@@ -64,6 +69,17 @@ func WithExecuteTemplate(t *template.Template) Option {
 	return func(e *Engine) { e.executeTemplate = t }
 }
 
+// WithObserver adds an observer that receives the events of every Run.
+func WithObserver(o Observer) Option {
+	return func(e *Engine) { e.observers = append(e.observers, o) }
+}
+
+// WithNotesInPrompt sets how many of the latest blackboard notes are shown
+// in prompts. Default 20.
+func WithNotesInPrompt(n int) Option {
+	return func(e *Engine) { e.notesInPrompt = n }
+}
+
 // WithMaxPlans sets how many alternative plans the planner may propose. Default 3.
 func WithMaxPlans(n int) Option {
 	return func(e *Engine) { e.maxPlans = n }
@@ -77,7 +93,7 @@ func WithMaxOutputTokens(n int) Option {
 // New returns an Engine whose components default to LLM-backed
 // implementations using m.
 func New(m Model, opts ...Option) *Engine {
-	e := &Engine{model: m, maxPlans: 3, strategy: BeamStrategy{}}
+	e := &Engine{model: m, maxPlans: 3, notesInPrompt: 20, strategy: BeamStrategy{}}
 	for _, o := range opts {
 		o(e)
 	}
@@ -91,21 +107,33 @@ func New(m Model, opts ...Option) *Engine {
 	return e
 }
 
-// Result is the outcome of a Run.
+// Result is the outcome of a Run. It marshals to JSON as the Run's trace.
 type Result struct {
-	Output string
+	Goal   string `json:"goal"`
+	Output string `json:"output"`
 	// Score is the evaluation of the root output, if it was evaluated.
-	Score *Score
-	Root  *Task
-	Usage Usage
+	Score *Score `json:"score,omitempty"`
+	// Error is the Run's error message, if it failed.
+	Error string `json:"error,omitempty"`
+	Root  *Task  `json:"root"`
+	Usage Usage  `json:"usage"`
 	// Exhausted reports whether the token budget ran out during the Run.
-	Exhausted bool
+	Exhausted bool    `json:"exhausted"`
+	Notes     []Note  `json:"notes"`
+	Events    []Event `json:"events"`
+}
+
+// WriteTrace writes r as indented JSON.
+func (r *Result) WriteTrace(w io.Writer) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(r)
 }
 
 // Run solves goal and returns the root task's output. On failure the
 // returned Result still holds the explored tree.
 func (e *Engine) Run(ctx context.Context, goal string) (*Result, error) {
-	r := &run{engine: e, goal: goal, sem: make(chan struct{}, e.budget.MaxConcurrency)}
+	r := &run{engine: e, goal: goal, sem: make(chan struct{}, e.budget.MaxConcurrency), board: &Blackboard{}}
 	r.model = r.meter(e.model)
 	r.planner = e.planner
 	if r.planner == nil {
@@ -122,10 +150,16 @@ func (e *Engine) Run(ctx context.Context, goal string) (*Result, error) {
 
 	root := &Task{ID: "t0", Description: goal, Agent: e.agents[0].Name, Status: StatusPending}
 	err := r.solve(ctx, root, nil, nil)
-	res := &Result{Output: root.Output, Score: root.Score, Root: root}
+	res := &Result{Goal: goal, Output: root.Output, Score: root.Score, Root: root, Notes: r.board.Notes()}
+	if err != nil {
+		res.Error = err.Error()
+	}
 	r.mu.Lock()
 	res.Usage, res.Exhausted = r.spent, r.exhausted
 	r.mu.Unlock()
+	r.emitMu.Lock()
+	res.Events = r.events
+	r.emitMu.Unlock()
 	return res, err
 }
 
@@ -138,6 +172,10 @@ type run struct {
 	evaluator   Evaluator
 	synthesizer Synthesizer
 	sem         chan struct{}
+	board       *Blackboard
+
+	emitMu sync.Mutex
+	events []Event
 
 	mu        sync.Mutex
 	spent     Usage
@@ -180,6 +218,22 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 	return resp, err
 }
 
+// emit records e and delivers it to the observers, one event at a time.
+func (r *run) emit(e Event) {
+	e.Time = time.Now()
+	r.emitMu.Lock()
+	defer r.emitMu.Unlock()
+	r.events = append(r.events, e)
+	for _, o := range r.engine.observers {
+		o.OnEvent(e)
+	}
+}
+
+func (r *run) post(author, text string) {
+	n := r.board.Post(author, text)
+	r.emit(Event{Kind: EventNoteAdded, TaskID: author, Text: n.Text})
+}
+
 func (r *run) agent(name string) Agent {
 	for _, a := range r.engine.agents {
 		if a.Name == name {
@@ -210,18 +264,21 @@ func (r *run) canDecompose(t *Task) bool {
 // descriptions; inputs are the outputs of t's dependencies.
 func (r *run) solve(ctx context.Context, t *Task, path []string, inputs []SubtaskResult) error {
 	t.Status = StatusRunning
+	r.emit(Event{Kind: EventTaskStarted, TaskID: t.ID, Text: t.Description})
 	err := r.solveTask(ctx, t, path, inputs)
 	if err != nil {
 		t.Status = StatusFailed
 		t.Error = err.Error()
+		r.emit(Event{Kind: EventTaskFailed, TaskID: t.ID, Text: t.Error})
 		return fmt.Errorf("task %s: %w", t.ID, err)
 	}
 	t.Status = StatusDone
+	r.emit(Event{Kind: EventTaskDone, TaskID: t.ID, Score: t.Score, Text: t.Output})
 	return nil
 }
 
 func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []SubtaskResult) error {
-	b := Brief{Goal: r.goal, Path: path, Task: t.Description, Inputs: inputs}
+	b := Brief{Goal: r.goal, Path: path, Task: t.Description, Inputs: inputs, Notes: r.board.Recent(r.engine.notesInPrompt)}
 	if r.canDecompose(t) {
 		d, err := r.planner.Plan(ctx, PlanRequest{Brief: b, Agents: r.agentInfos(), MaxPlans: r.engine.maxPlans})
 		switch {
@@ -229,11 +286,13 @@ func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []Su
 			return fmt.Errorf("plan: %w", err)
 		case err == nil && !d.Atomic:
 			if plans := r.buildPlans(t, d.Plans); len(plans) > 0 {
+				r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: strconv.Itoa(len(plans))})
 				return r.explore(ctx, t, b, plans)
 			}
 		}
 		// A failed or unusable decision falls back to direct execution.
 	}
+	r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: "atomic"})
 	return r.executeLeaf(ctx, t, b)
 }
 
@@ -245,7 +304,8 @@ func (r *run) executeLeaf(ctx context.Context, t *Task, b Brief) error {
 	if agent.Model != nil {
 		m = r.meter(agent.Model)
 	}
-	out, err := execute(ctx, m, r.engine.executeTemplate, agent, agent.Tools, b, r.engine.maxTokens)
+	tools := append(slices.Clone(agent.Tools), noteTool{author: t.ID, post: r.post})
+	out, err := execute(ctx, m, r.engine.executeTemplate, agent, tools, b, r.engine.maxTokens)
 	if err != nil {
 		return fmt.Errorf("execute: %w", err)
 	}
@@ -336,6 +396,7 @@ func (r *run) explore(ctx context.Context, t *Task, b Brief, plans []*Plan) erro
 		return errors.New("strategy returned no successful plan")
 	}
 	t.Chosen, t.Output, t.Score = p.ID, p.Output, p.ResultScore
+	r.emit(Event{Kind: EventPlanChosen, TaskID: t.ID, PlanID: p.ID, Score: p.ResultScore})
 	return nil
 }
 
@@ -355,6 +416,7 @@ func (x *exploration) ScorePlan(ctx context.Context, p *Plan) *Score {
 		return nil
 	}
 	p.PlanScore = &s
+	x.run.emit(Event{Kind: EventPlanScored, TaskID: x.task.ID, PlanID: p.ID, Score: &s})
 	return p.PlanScore
 }
 
@@ -364,20 +426,27 @@ func (x *exploration) ScoreResult(ctx context.Context, p *Plan) *Score {
 		return nil
 	}
 	p.ResultScore = &s
+	x.run.emit(Event{Kind: EventResultScored, TaskID: x.task.ID, PlanID: p.ID, Score: &s})
 	return p.ResultScore
 }
 
-func (x *exploration) Prune(p *Plan) { p.Status = StatusPruned }
+func (x *exploration) Prune(p *Plan) {
+	p.Status = StatusPruned
+	x.run.emit(Event{Kind: EventPlanPruned, TaskID: x.task.ID, PlanID: p.ID})
+}
 
 func (x *exploration) Execute(ctx context.Context, p *Plan) error {
 	p.Status = StatusRunning
+	x.run.emit(Event{Kind: EventPlanStarted, TaskID: x.task.ID, PlanID: p.ID, Text: p.Rationale})
 	err := x.run.executePlan(ctx, x.task, x.brief, p)
 	if err != nil {
 		p.Status = StatusFailed
 		p.Error = err.Error()
+		x.run.emit(Event{Kind: EventPlanFailed, TaskID: x.task.ID, PlanID: p.ID, Text: p.Error})
 		return fmt.Errorf("plan %s: %w", p.ID, err)
 	}
 	p.Status = StatusDone
+	x.run.emit(Event{Kind: EventPlanDone, TaskID: x.task.ID, PlanID: p.ID, Text: p.Output})
 	return nil
 }
 
