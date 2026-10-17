@@ -321,6 +321,85 @@ func TestConcurrentCallsCannotOverspend(t *testing.T) {
 	}
 }
 
+func TestReservationWaitsForOthersToSettle(t *testing.T) {
+	// Every call reserves 40 but spends 20. After the plan (20 spent), only
+	// two of the three executions fit at once; the third must wait for a
+	// release instead of declaring the budget exhausted.
+	// C reserves only once A and B are running, so it finds no room.
+	var running sync.WaitGroup
+	running.Add(2)
+	pessimistic := ethan.WithTokenEstimator(func(req ethan.Request) int {
+		if req.Tag == ethan.TagExecute && taskOf(req) == "C" {
+			running.Wait()
+		}
+		return 40
+	})
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p",
+			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}, sub{ID: "c", Description: "C"},
+		))).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			if taskOf(req) != "C" {
+				running.Done()
+				time.Sleep(20 * time.Millisecond)
+			}
+			return echoTask(req)
+		}).
+		On(ethan.TagSynthesize, joinResults)
+
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 120}), pessimistic).
+		Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Partial || res.Exhausted {
+		t.Errorf("Partial = %v, Exhausted = %v; the budget was never really short", res.Partial, res.Exhausted)
+	}
+	for _, st := range res.Root.Plans[0].Subtasks {
+		if st.Status != ethan.StatusDone {
+			t.Errorf("%s: %s %s", st.ID, st.Status, st.Error)
+		}
+	}
+}
+
+func TestReservationsWaitingOnEachOtherDoNotDeadlock(t *testing.T) {
+	// Two executions each hold 30 and then ask for 30 more, which fits only
+	// once the other releases. One must give up so the other can finish.
+	var ready sync.WaitGroup
+	ready.Add(2)
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			ready.Done()
+			ready.Wait()
+			if err := req.Reserve(30); err != nil {
+				return &ethan.Response{Usage: ethantest.DefaultUsage}, err
+			}
+			return echoTask(req)
+		}).
+		On(ethan.TagSynthesize, joinResults)
+	est := ethan.WithTokenEstimator(func(ethan.Request) int { return 30 })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 100}), est).Run(ctx, "goal")
+	if ctx.Err() != nil {
+		t.Fatal("deadlocked")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := 0
+	for _, st := range res.Root.Plans[0].Subtasks {
+		if st.Status == ethan.StatusDone {
+			done++
+		}
+	}
+	if done != 1 || !res.Partial {
+		t.Errorf("done = %d, Partial = %v; want exactly one finished subtask", done, res.Partial)
+	}
+}
+
 func TestExhaustedWhenLastCallReachesTheLimit(t *testing.T) {
 	m := ethantest.New().On(ethan.TagPlan, atomicPlan()).On(ethan.TagExecute, ethantest.ReplyText("x"))
 	small := ethan.WithTokenEstimator(func(ethan.Request) int { return 1 })

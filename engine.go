@@ -148,7 +148,8 @@ func (r *Result) WriteTrace(w io.Writer) error {
 // Run solves goal and returns the root task's output. On failure the
 // returned Result still holds the explored tree.
 func (e *Engine) Run(ctx context.Context, goal string) (*Result, error) {
-	r := &run{engine: e, goal: goal, sem: make(chan struct{}, e.budget.MaxConcurrency), board: &Blackboard{}}
+	r := &run{engine: e, goal: goal, sem: make(chan struct{}, e.budget.MaxConcurrency), board: &Blackboard{},
+		released: make(chan struct{})}
 	r.model = r.meter(e.model)
 	r.planner = e.planner
 	if r.planner == nil {
@@ -199,6 +200,8 @@ type run struct {
 	mu        sync.Mutex
 	spent     Usage
 	reserved  int
+	waiting   int           // tokens held by calls waiting in reserve
+	released  chan struct{} // closed and replaced whenever a reservation is released
 	exhausted bool
 	nodes     int
 }
@@ -222,10 +225,10 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 		return nil, ctx.Err()
 	}
 	held := 0 // tokens this call has reserved; guarded by r.mu
-	if err := r.reserve(r.engine.estimate(req), &held); err != nil {
+	if err := r.reserve(ctx, r.engine.estimate(req), &held); err != nil {
 		return nil, err
 	}
-	req.Reserve = func(tokens int) error { return r.reserve(tokens, &held) }
+	req.Reserve = func(tokens int) error { return r.reserve(ctx, tokens, &held) }
 
 	resp, err := mm.model.Generate(ctx, req)
 	var used Usage
@@ -236,14 +239,39 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 	return resp, err
 }
 
-// reserve sets aside tokens for a model call, adding them to *held, or
-// fails with ErrBudgetExhausted if they do not fit in the budget.
-func (r *run) reserve(tokens int, held *int) error {
+// reserve sets aside tokens for a model call, adding them to *held.
+//
+// When the tokens fit only once other calls release their reservations,
+// reserve waits for them: reservations are pessimistic, so running out of
+// room while other calls are in flight is no reason to stop the run. It
+// fails with ErrBudgetExhausted, and marks the run exhausted, when the
+// tokens would not fit even if every other reservation were released. It
+// also fails when no running call could release anything, which happens
+// when every holder is itself waiting here for more.
+func (r *run) reserve(ctx context.Context, tokens int, held *int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if limit := r.engine.budget.MaxTokens; limit > 0 && r.spent.Total()+r.reserved+tokens > limit {
-		r.exhausted = true
-		return ErrBudgetExhausted
+	limit := r.engine.budget.MaxTokens
+	for limit > 0 && r.spent.Total()+r.reserved+tokens > limit {
+		if r.spent.Total()+*held+tokens > limit {
+			r.exhausted = true
+			return ErrBudgetExhausted
+		}
+		if r.reserved-r.waiting-*held <= 0 {
+			return ErrBudgetExhausted
+		}
+		released := r.released
+		r.waiting += *held
+		r.mu.Unlock()
+		select {
+		case <-released:
+		case <-ctx.Done():
+		}
+		r.mu.Lock()
+		r.waiting -= *held
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 	r.reserved += tokens
 	*held += tokens
@@ -260,6 +288,8 @@ func (r *run) settle(held *int, used Usage) {
 	if limit := r.engine.budget.MaxTokens; limit > 0 && r.spent.Total() >= limit {
 		r.exhausted = true
 	}
+	close(r.released)
+	r.released = make(chan struct{})
 }
 
 // emit records e and delivers it to the observers, one event at a time.
