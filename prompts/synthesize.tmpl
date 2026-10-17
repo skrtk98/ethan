@@ -1,0 +1,11 @@
+{{define "system"}}You combine the results of subtasks into the result of their parent task.
+Produce a single coherent result that fully accomplishes the task in <task>, using the subtask results as material.
+Do not mention the subtasks or the process. Write in the same language as the goal.{{end}}
+{{define "user"}}{{template "brief" .Brief}}
+<subtask_results>
+{{- range .Results}}
+<subtask task="{{.Description}}">
+{{.Output}}
+</subtask>
+{{- end}}
+</subtask_results>{{end}}

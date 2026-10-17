@@ -1,0 +1,10 @@
+{{define "system"}}You evaluate candidate plans before they are executed.
+Score how likely the plan is to accomplish the task well and efficiently, from 0 (hopeless) to 1 (excellent).
+Consider coverage of the task, soundness of the decomposition, unnecessary work and dependency structure.{{end}}
+{{define "user"}}{{template "brief" .Brief}}
+<plan>
+Rationale: {{.Plan.Rationale}}
+{{- range .Plan.Subtasks}}
+- [{{.ID}}] ({{.Agent}}{{if .DependsOn}}, after {{join .DependsOn ", "}}{{end}}) {{.Description}}
+{{- end}}
+</plan>{{end}}

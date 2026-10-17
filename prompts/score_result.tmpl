@@ -1,0 +1,7 @@
+{{define "system"}}You evaluate the result produced for a task.
+Score how well the result accomplishes the task, from 0 (useless or wrong) to 1 (complete and correct).
+Penalize missing parts, unsupported claims and irrelevant content.{{end}}
+{{define "user"}}{{template "brief" .Brief}}
+<result>
+{{.Output}}
+</result>{{end}}

@@ -1,0 +1,29 @@
+{{define "brief"}}<goal>
+{{.Goal}}
+</goal>
+{{- if .Path}}
+<ancestors>
+{{- range $i, $p := .Path}}
+{{$i}}. {{$p}}
+{{- end}}
+</ancestors>
+{{- end}}
+<task>
+{{.Task}}
+</task>
+{{- if .Inputs}}
+<inputs>
+{{- range .Inputs}}
+<input task="{{.Description}}">
+{{.Output}}
+</input>
+{{- end}}
+</inputs>
+{{- end}}
+{{- if .Notes}}
+<blackboard>
+{{- range .Notes}}
+- [{{.Author}}] {{.Text}}
+{{- end}}
+</blackboard>
+{{- end}}{{end}}
