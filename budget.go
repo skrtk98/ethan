@@ -3,18 +3,23 @@ package ethan
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 )
 
-// ErrBudgetExhausted is returned by model calls once the token budget of a
-// Run has been spent.
-var ErrBudgetExhausted = errors.New("ethan: token budget exhausted")
+// ErrBudgetExhausted is returned when a Run's budget does not allow more
+// work: a model call that does not fit in the token budget, or a task beyond
+// the node limit.
+var ErrBudgetExhausted = errors.New("ethan: budget exhausted")
+
+// ErrNodeLimit is returned for a task that would exceed Budget.MaxNodes.
+var ErrNodeLimit = fmt.Errorf("%w: node limit reached", ErrBudgetExhausted)
 
 // Budget bounds the work of a Run. Zero fields take their defaults.
 type Budget struct {
 	// MaxDepth is the depth at which tasks are no longer decomposed. Default 2.
 	MaxDepth int
-	// MaxNodes is the number of solved tasks after which tasks are no longer
-	// decomposed. It is a soft cap: plans already underway still finish.
+	// MaxNodes is the number of tasks, leaves included, a Run may start.
+	// Subtasks beyond it are not started and their plan becomes partial.
 	// Default 40.
 	MaxNodes int
 	// MaxTokens is the total of input and output tokens a Run may spend.

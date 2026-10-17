@@ -365,3 +365,113 @@ func TestAdapterContinuationsAreReserved(t *testing.T) {
 		t.Errorf("reserve err = %v, run err = %v", reserveErr, err)
 	}
 }
+
+func TestBudgetExhaustionKeepsCompletedSubtasks(t *testing.T) {
+	// C never fits in the budget. It starts after B, while A is still
+	// running; A must not be canceled, and the plan becomes partial and
+	// names C as missing.
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p",
+			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"},
+			sub{ID: "c", Description: "C", DependsOn: []string{"b"}},
+		))).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			if taskOf(req) == "A" {
+				time.Sleep(50 * time.Millisecond)
+			}
+			return echoTask(req)
+		}).
+		On(ethan.TagSynthesize, func(req ethan.Request) (*ethan.Response, error) {
+			return ethantest.Text(ethantest.Prompt(req)), nil
+		})
+	costs := ethan.WithTokenEstimator(func(req ethan.Request) int {
+		if taskOf(req) == "C" {
+			return 1000
+		}
+		return ethantest.DefaultUsage.Total()
+	})
+
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 100}), costs).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Partial || !res.Exhausted || res.Root.Status != ethan.StatusPartial {
+		t.Errorf("Partial=%v Exhausted=%v root=%s", res.Partial, res.Exhausted, res.Root.Status)
+	}
+	for _, want := range []string{"out(A)", "out(B)", "NOT COMPLETED"} {
+		if !strings.Contains(res.Output, want) {
+			t.Errorf("Output lacks %q:\n%s", want, res.Output)
+		}
+	}
+	if st := res.Root.Plans[0].Subtasks[0]; st.Status != ethan.StatusDone {
+		t.Errorf("in-flight sibling A ended %s", st.Status)
+	}
+}
+
+func TestPartialResultsPropagateThroughLevels(t *testing.T) {
+	// The root's single subtask X is decomposed into Y and Z; Z never fits.
+	m := ethantest.New().
+		On(ethan.TagPlan, func(req ethan.Request) (*ethan.Response, error) {
+			switch taskOf(req) {
+			case "goal":
+				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("p", sub{ID: "x", Description: "X"})}}), nil
+			case "X":
+				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("q", sub{ID: "y", Description: "Y"}, sub{ID: "z", Description: "Z"})}}), nil
+			}
+			return ethantest.JSON(ethan.Decision{Atomic: true}), nil
+		}).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults)
+	costs := ethan.WithTokenEstimator(func(req ethan.Request) int {
+		if taskOf(req) == "Z" {
+			return 1000
+		}
+		return ethantest.DefaultUsage.Total()
+	})
+
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 2, MaxTokens: 200}), costs).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Partial || !strings.Contains(res.Output, "out(Y)") {
+		t.Errorf("Partial=%v Output=%q", res.Partial, res.Output)
+	}
+	if x := res.Root.Plans[0].Subtasks[0]; x.Status != ethan.StatusPartial {
+		t.Errorf("X status = %s", x.Status)
+	}
+}
+
+func TestNodeLimitIsHard(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p",
+			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"},
+			sub{ID: "c", Description: "C"}, sub{ID: "d", Description: "D"},
+		))).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults)
+
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxNodes: 3})).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(m.Calls(ethan.TagExecute)); n != 2 {
+		t.Errorf("executed %d subtasks, want 2 (root + 2 = 3 nodes)", n)
+	}
+	if !res.Partial || !res.Exhausted {
+		t.Errorf("Partial=%v Exhausted=%v", res.Partial, res.Exhausted)
+	}
+}
+
+func TestDecompositionNeedsRoomForTwoNodes(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagExecute, echoTask)
+
+	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxNodes: 2})).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Root.Atomic || len(m.Calls(ethan.TagPlan)) != 0 {
+		t.Errorf("root decomposed with room for only one more task")
+	}
+}

@@ -9,10 +9,12 @@ const (
 	EventTaskStarted  EventKind = "task_started"
 	EventTaskDecided  EventKind = "task_decided" // Text is "atomic" or the number of plans
 	EventTaskDone     EventKind = "task_done"
+	EventTaskPartial  EventKind = "task_partial"
 	EventTaskFailed   EventKind = "task_failed"
 	EventPlanScored   EventKind = "plan_scored"
 	EventPlanStarted  EventKind = "plan_started"
 	EventPlanDone     EventKind = "plan_done"
+	EventPlanPartial  EventKind = "plan_partial"
 	EventPlanFailed   EventKind = "plan_failed"
 	EventPlanPruned   EventKind = "plan_pruned"
 	EventResultScored EventKind = "result_scored"

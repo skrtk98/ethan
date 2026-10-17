@@ -7,9 +7,14 @@ const (
 	StatusPending Status = "pending"
 	StatusRunning Status = "running"
 	StatusDone    Status = "done"
+	// StatusPartial means the budget ran out before every subtask finished;
+	// the output is assembled from those that did and names the rest.
+	StatusPartial Status = "partial"
 	StatusFailed  Status = "failed"
 	StatusPruned  Status = "pruned"
 )
+
+func (s Status) usable() bool { return s == StatusDone || s == StatusPartial }
 
 // Task is an OR node of the exploration tree: it is solved either directly
 // by an agent or by exactly one of its candidate Plans.

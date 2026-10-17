@@ -1,6 +1,7 @@
 package ethan
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -127,10 +128,14 @@ type Result struct {
 	Root  *Task  `json:"root"`
 	Usage Usage  `json:"usage"`
 	// Exhausted reports whether the budget ran out during the Run: a model
-	// call was refused, or the tokens spent reached Budget.MaxTokens.
-	Exhausted bool    `json:"exhausted"`
-	Notes     []Note  `json:"notes"`
-	Events    []Event `json:"events"`
+	// call or a task was refused, or the tokens spent reached
+	// Budget.MaxTokens.
+	Exhausted bool `json:"exhausted"`
+	// Partial reports whether Output is incomplete because the budget ran
+	// out before every subtask finished. Output then names what is missing.
+	Partial bool    `json:"partial"`
+	Notes   []Note  `json:"notes"`
+	Events  []Event `json:"events"`
 }
 
 // WriteTrace writes r as indented JSON.
@@ -159,8 +164,12 @@ func (e *Engine) Run(ctx context.Context, goal string) (*Result, error) {
 	}
 
 	root := &Task{ID: "t0", Description: goal, Agent: e.agents[0].Name, Status: StatusPending}
-	err := r.solve(ctx, root, nil, nil)
-	res := &Result{Goal: goal, Output: root.Output, Score: root.Score, Root: root, Notes: r.board.Notes()}
+	err := r.takeNode()
+	if err == nil {
+		err = r.solve(ctx, root, nil, nil)
+	}
+	res := &Result{Goal: goal, Output: root.Output, Score: root.Score, Root: root, Notes: r.board.Notes(),
+		Partial: root.Status == StatusPartial}
 	if err != nil {
 		res.Error = err.Error()
 	}
@@ -286,13 +295,32 @@ func (r *run) agentInfos() []AgentInfo {
 	return infos
 }
 
-// canDecompose reports whether t may be split further, and counts t as a
-// solved node.
+// takeNode counts a task about to start against Budget.MaxNodes.
+func (r *run) takeNode() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.nodes >= r.engine.budget.MaxNodes {
+		r.exhausted = true
+		return ErrNodeLimit
+	}
+	r.nodes++
+	return nil
+}
+
+// stopped reports whether the budget has run out, after which no new work
+// is started.
+func (r *run) stopped() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.exhausted
+}
+
+// canDecompose reports whether t may be split further: it is above the
+// depth limit and at least two more tasks may start.
 func (r *run) canDecompose(t *Task) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.nodes++
-	return t.Depth < r.engine.budget.MaxDepth && r.nodes <= r.engine.budget.MaxNodes
+	return t.Depth < r.engine.budget.MaxDepth && r.engine.budget.MaxNodes-r.nodes >= 2 && !r.exhausted
 }
 
 // solve solves t, recording its outcome on t. path holds the ancestors'
@@ -306,6 +334,10 @@ func (r *run) solve(ctx context.Context, t *Task, path []string, inputs []Subtas
 		t.Error = err.Error()
 		r.emit(Event{Kind: EventTaskFailed, TaskID: t.ID, Text: t.Error})
 		return fmt.Errorf("task %s: %w", t.ID, err)
+	}
+	if t.Status == StatusPartial {
+		r.emit(Event{Kind: EventTaskPartial, TaskID: t.ID, Score: t.Score, Text: t.Output})
+		return nil
 	}
 	t.Status = StatusDone
 	r.emit(Event{Kind: EventTaskDone, TaskID: t.ID, Score: t.Score, Text: t.Output})
@@ -427,10 +459,13 @@ func (r *run) explore(ctx context.Context, t *Task, b Brief, plans []*Plan) erro
 	if err != nil {
 		return err
 	}
-	if p == nil || p.Status != StatusDone {
+	if p == nil || !p.Status.usable() {
 		return errors.New("strategy returned no successful plan")
 	}
 	t.Chosen, t.Output, t.Score = p.ID, p.Output, p.ResultScore
+	if p.Status == StatusPartial {
+		t.Status = StatusPartial
+	}
 	r.emit(Event{Kind: EventPlanChosen, TaskID: t.ID, PlanID: p.ID, Score: p.ResultScore})
 	return nil
 }
@@ -473,12 +508,17 @@ func (x *exploration) Prune(p *Plan) {
 func (x *exploration) Execute(ctx context.Context, p *Plan) error {
 	p.Status = StatusRunning
 	x.run.emit(Event{Kind: EventPlanStarted, TaskID: x.task.ID, PlanID: p.ID, Text: p.Rationale})
-	err := x.run.executePlan(ctx, x.task, x.brief, p)
+	partial, err := x.run.executePlan(ctx, x.task, x.brief, p)
 	if err != nil {
 		p.Status = StatusFailed
 		p.Error = err.Error()
 		x.run.emit(Event{Kind: EventPlanFailed, TaskID: x.task.ID, PlanID: p.ID, Text: p.Error})
 		return fmt.Errorf("plan %s: %w", p.ID, err)
+	}
+	if partial {
+		p.Status = StatusPartial
+		x.run.emit(Event{Kind: EventPlanPartial, TaskID: x.task.ID, PlanID: p.ID, Text: p.Output})
+		return nil
 	}
 	p.Status = StatusDone
 	x.run.emit(Event{Kind: EventPlanDone, TaskID: x.task.ID, PlanID: p.ID, Text: p.Output})
@@ -493,10 +533,18 @@ func proposalOf(p *Plan) PlanProposal {
 	return pp
 }
 
+// notCompleted stands in for the output of a subtask the budget did not
+// allow to finish.
+const notCompleted = "[NOT COMPLETED: the budget ran out before this subtask was done]"
+
 // executePlan solves p's subtasks, each as soon as its dependencies are
-// done, then synthesizes their outputs. The first failure cancels the rest
-// and is returned.
-func (r *run) executePlan(ctx context.Context, parent *Task, b Brief, p *Plan) error {
+// done, then synthesizes their outputs.
+//
+// A failure other than the budget running out cancels the remaining
+// subtasks and is returned. When the budget runs out, subtasks not yet
+// started are skipped, those in flight finish, and if any subtask
+// succeeded the plan's output is assembled from them and reported partial.
+func (r *run) executePlan(ctx context.Context, parent *Task, b Brief, p *Plan) (partial bool, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -508,18 +556,19 @@ func (r *run) executePlan(ctx context.Context, parent *Task, b Brief, p *Plan) e
 	}
 	path := append(slices.Clone(b.Path), parent.Description)
 	var (
-		wg       sync.WaitGroup
-		once     sync.Once
-		firstErr error
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		hardErr   error // first failure other than the budget; cancels the rest
+		budgetErr error // first budget refusal
 	)
 	for _, st := range p.Subtasks {
 		wg.Go(func() {
 			defer close(done[st.ID])
 			var inputs []SubtaskResult
 			for _, d := range st.DependsOn {
-				<-done[d] // every subtask closes its channel, even when canceled
+				<-done[d] // every subtask closes its channel, even when skipped
 				dep := byID[d]
-				if dep.Status != StatusDone {
+				if !dep.Status.usable() {
 					st.Status = StatusPruned
 					return
 				}
@@ -529,28 +578,60 @@ func (r *run) executePlan(ctx context.Context, parent *Task, b Brief, p *Plan) e
 				st.Status = StatusPruned
 				return
 			}
-			if err := r.solve(ctx, st, path, inputs); err != nil {
-				// Only the first error is the cause; later ones are cancellations.
-				once.Do(func() { firstErr = err; cancel() })
+			err := ErrBudgetExhausted
+			if !r.stopped() {
+				err = r.takeNode()
+			}
+			if err != nil {
+				st.Status, st.Error = StatusPruned, "not started: "+err.Error()
+			} else {
+				err = r.solve(ctx, st, path, inputs)
+			}
+			if err == nil {
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if errors.Is(err, ErrBudgetExhausted) {
+				budgetErr = cmp.Or(budgetErr, err)
+				return
+			}
+			if hardErr == nil {
+				hardErr = err
+				cancel()
 			}
 		})
 	}
 	wg.Wait()
-	if firstErr != nil {
-		return firstErr
+	if hardErr != nil {
+		return false, hardErr
 	}
 
 	results := make([]SubtaskResult, len(p.Subtasks))
+	finished := 0
 	for i, st := range p.Subtasks {
 		results[i] = SubtaskResult{Description: st.Description, Output: st.Output}
+		switch {
+		case st.Status == StatusDone:
+			finished++
+		case st.Status == StatusPartial:
+			finished++
+			partial = true
+		default:
+			results[i].Output = notCompleted
+			partial = true
+		}
+	}
+	if finished == 0 {
+		return false, budgetErr
 	}
 	out, err := r.synthesizer.Synthesize(ctx, b, results)
 	switch {
 	case errors.Is(err, ErrBudgetExhausted):
 		out = joinResults(results)
 	case err != nil:
-		return fmt.Errorf("synthesize: %w", err)
+		return false, fmt.Errorf("synthesize: %w", err)
 	}
 	p.Output = out
-	return nil
+	return partial, nil
 }

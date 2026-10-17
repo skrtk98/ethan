@@ -1,6 +1,7 @@
 {{define "system"}}You combine the results of subtasks into the result of their parent task.
 Produce a single coherent result that fully accomplishes the task in <task>, using the subtask results as material.
-Do not mention the subtasks or the process. Write in the same language as the goal.{{end}}
+Do not mention the subtasks or the process. Write in the same language as the goal.
+If a subtask result is marked NOT COMPLETED, do not invent its content: say plainly which part of the task is missing.{{end}}
 {{define "user"}}{{template "brief" .Brief}}
 <subtask_results>
 {{- range .Results}}

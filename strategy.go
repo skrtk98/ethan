@@ -23,7 +23,9 @@ type Exploration interface {
 	// ScorePlan evaluates p before execution and records it on p.
 	// It returns nil if the evaluation failed.
 	ScorePlan(ctx context.Context, p *Plan) *Score
-	// Execute solves p's subtasks and synthesizes their results into p.Output.
+	// Execute solves p's subtasks and synthesizes their results into
+	// p.Output. It returns nil when p produced an output, which is partial
+	// (p.Status == StatusPartial) if the budget ran out midway.
 	Execute(ctx context.Context, p *Plan) error
 	// ScoreResult evaluates p's output and records it on p.
 	// It returns nil if the evaluation failed.
@@ -85,9 +87,12 @@ func (s BeamStrategy) Explore(ctx context.Context, x Exploration) (*Plan, error)
 	return nil, errors.Join(errs...)
 }
 
-// best returns the highest-scoring of the succeeded plans, scoring their
-// results only when there is a choice to make.
+// best returns the highest-scoring of the succeeded plans, preferring
+// complete ones and scoring results only when there is a choice to make.
 func best(ctx context.Context, x Exploration, ok []*Plan) *Plan {
+	if complete := slices.DeleteFunc(slices.Clone(ok), func(p *Plan) bool { return p.Status != StatusDone }); len(complete) > 0 {
+		ok = complete
+	}
 	if len(ok) == 1 {
 		return ok[0]
 	}
