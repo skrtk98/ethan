@@ -1,3 +1,4 @@
 /report*.md
 /trace*.json
 /research
+.env
