@@ -200,7 +200,8 @@ type run struct {
 	mu        sync.Mutex
 	spent     Usage
 	reserved  int
-	waiting   int           // tokens held by calls waiting in reserve
+	waiters   int           // calls waiting in reserve
+	waiting   int           // tokens held by those calls
 	released  chan struct{} // closed and replaced whenever a reservation is released
 	exhausted bool
 	nodes     int
@@ -245,22 +246,20 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 // reserve waits for them: reservations are pessimistic, so running out of
 // room while other calls are in flight is no reason to stop the run. It
 // fails with ErrBudgetExhausted, and marks the run exhausted, when the
-// tokens would not fit even if every other reservation were released. It
-// also fails when no running call could release anything, which happens
-// when every holder is itself waiting here for more.
+// tokens would not fit even if every other reservation were released, or
+// when no running call could release anything, which happens when every
+// holder is itself waiting here for more.
 func (r *run) reserve(ctx context.Context, tokens int, held *int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	limit := r.engine.budget.MaxTokens
 	for limit > 0 && r.spent.Total()+r.reserved+tokens > limit {
-		if r.spent.Total()+*held+tokens > limit {
+		if r.spent.Total()+*held+tokens > limit || r.reserved-r.waiting-*held <= 0 {
 			r.exhausted = true
 			return ErrBudgetExhausted
 		}
-		if r.reserved-r.waiting-*held <= 0 {
-			return ErrBudgetExhausted
-		}
 		released := r.released
+		r.waiters++
 		r.waiting += *held
 		r.mu.Unlock()
 		select {
@@ -268,6 +267,7 @@ func (r *run) reserve(ctx context.Context, tokens int, held *int) error {
 		case <-ctx.Done():
 		}
 		r.mu.Lock()
+		r.waiters--
 		r.waiting -= *held
 		if err := ctx.Err(); err != nil {
 			return err
