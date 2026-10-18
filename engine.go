@@ -142,6 +142,38 @@ func (r *Result) WriteTrace(w io.Writer) error {
 func (e *Engine) Run(ctx context.Context, goal string) (*Result, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
+	r := e.newRun(goal, cancel)
+	root := &Task{ID: "t0", Description: goal, Agent: e.agents[0].Name, Status: StatusPending}
+	r.emit(Event{Kind: EventRunStarted, Text: goal, Agent: root.Agent})
+	return r.finish(ctx, root, r.start(ctx, root, nil, nil))
+}
+
+// Resume continues the run recorded in events, as read from its journal
+// with ReadJournal. Finished tasks and plans, decisions, scores and notes
+// are reused without calling any model; everything else, including tasks
+// that were running when the run stopped, is solved again. Limits apply to
+// the resumed run alone, while Result.Usage includes the earlier runs.
+//
+// To keep the journal complete, give the Engine the same journal to append
+// to. The returned Result holds the events of the earlier runs too.
+func (e *Engine) Resume(ctx context.Context, events []Event) (*Result, error) {
+	s, err := replay(events)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	root := s.root
+	reopen(root)
+	r := e.newRun(root.Description, cancel)
+	r.prior = s.usage()
+	r.board.notes = s.notes
+	r.events = slices.Clone(events)
+	r.emit(Event{Kind: EventRunResumed})
+	return r.finish(ctx, root, r.start(ctx, root, nil, nil))
+}
+
+func (e *Engine) newRun(goal string, cancel context.CancelCauseFunc) *run {
 	r := &run{engine: e, goal: goal, cancel: cancel, sem: make(chan struct{}, e.limits.MaxConcurrency), board: &Blackboard{}}
 	r.model = r.meter(e.model)
 	r.planner = e.planner
@@ -156,24 +188,23 @@ func (e *Engine) Run(ctx context.Context, goal string) (*Result, error) {
 	if r.synthesizer == nil {
 		r.synthesizer = &LLMSynthesizer{Model: r.model, MaxTokens: e.maxTokens}
 	}
-
-	root := &Task{ID: "t0", Description: goal, Agent: e.agents[0].Name, Status: StatusPending}
-	r.emit(Event{Kind: EventRunStarted, Text: goal})
-	err := r.takeTask()
-	if err == nil {
-		err = r.solve(ctx, root, nil, nil)
-	}
-	return r.finish(ctx, root, err)
+	return r
 }
 
 // finish records the end of the run and assembles its Result.
 func (r *run) finish(ctx context.Context, root *Task, err error) (*Result, error) {
-	if cause := context.Cause(ctx); err != nil && cause != nil {
-		err = cause // a limit or a journal failure rather than the cancellations it caused
-	}
 	r.mu.Lock()
 	usage := r.prior.Add(r.spent)
+	stopErr := r.stopErr
 	r.mu.Unlock()
+	switch cause := context.Cause(ctx); {
+	case stopErr != nil:
+		// A run stopped for a limit or its journal fails, even if what was
+		// left running managed to finish.
+		err = stopErr
+	case err != nil && cause != nil:
+		err = cause // rather than the cancellations it caused
+	}
 	if err != nil {
 		r.emit(Event{Kind: EventRunFailed, Text: err.Error(), Usage: &usage})
 	} else {
@@ -181,7 +212,7 @@ func (r *run) finish(ctx context.Context, root *Task, err error) (*Result, error
 	}
 	r.emitMu.Lock()
 	if err == nil && r.journalErr != nil {
-		err = r.journalErr
+		err = r.journalErr // the last events could not be journaled
 	}
 	events := r.events
 	r.emitMu.Unlock()
@@ -209,10 +240,11 @@ type run struct {
 	events     []Event
 	journalErr error
 
-	mu    sync.Mutex
-	prior Usage // spent by the runs this one resumes
-	spent Usage // spent by this run, which Limits.MaxTokens bounds
-	tasks int
+	mu      sync.Mutex
+	prior   Usage // spent by the runs this one resumes
+	spent   Usage // spent by this run, which Limits.MaxTokens bounds
+	tasks   int
+	stopErr error // why the run was stopped, if it was
 }
 
 // meter wraps m so that its calls count against the run's limits.
@@ -269,10 +301,20 @@ func (r *run) taskUsage(t *Task) *Usage {
 	return &u
 }
 
-// exceed cancels the whole run because err, a limit, was exceeded.
+// exceed stops the run because err, a limit, was exceeded.
 func (r *run) exceed(err error) error {
-	r.cancel(err)
+	r.stop(err)
 	return err
+}
+
+// stop cancels the whole run for err; the first reason is kept.
+func (r *run) stop(err error) {
+	r.mu.Lock()
+	if r.stopErr == nil {
+		r.stopErr = err
+	}
+	r.mu.Unlock()
+	r.cancel(err)
 }
 
 // emit records e and delivers it to the observers, one event at a time.
@@ -284,7 +326,7 @@ func (r *run) emit(e Event) {
 	if j := r.engine.journal; j != nil && r.journalErr == nil {
 		if err := j.Append(e); err != nil {
 			r.journalErr = fmt.Errorf("ethan: journal: %w", err)
-			r.cancel(r.journalErr)
+			r.stop(r.journalErr)
 		}
 	}
 	for _, o := range r.engine.observers {
@@ -333,6 +375,19 @@ func (r *run) takeTask() error {
 	return nil
 }
 
+// start counts t against Limits.MaxTasks and solves it, unless it was
+// already done in the run being resumed.
+func (r *run) start(ctx context.Context, t *Task, path []string, inputs []SubtaskResult) error {
+	if t.Status == StatusDone {
+		return nil
+	}
+	if err := r.takeTask(); err != nil {
+		t.Status, t.Error = StatusPruned, "not started: "+err.Error()
+		return err
+	}
+	return r.solve(ctx, t, path, inputs)
+}
+
 // solve solves t, recording its outcome on t. path holds the ancestors'
 // descriptions; inputs are the outputs of t's dependencies.
 func (r *run) solve(ctx context.Context, t *Task, path []string, inputs []SubtaskResult) error {
@@ -353,6 +408,13 @@ func (r *run) solve(ctx context.Context, t *Task, path []string, inputs []Subtas
 
 func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []SubtaskResult) error {
 	b := Brief{Goal: r.goal, Path: path, Task: t.Description, Inputs: inputs, Notes: r.board.Recent(r.engine.notesInPrompt)}
+	// A task resumed from a journal keeps the decision it had made.
+	switch {
+	case t.Atomic:
+		return r.executeLeaf(ctx, t, b)
+	case len(t.Plans) > 0:
+		return r.explore(ctx, t, b, t.Plans)
+	}
 	if t.Depth < r.engine.limits.MaxDepth {
 		d, err := r.planner.Plan(ctx, r.planRequest(t, b))
 		switch {
@@ -394,27 +456,37 @@ func (r *run) executeLeaf(ctx context.Context, t *Task, b Brief) error {
 // buildPlans turns valid proposals into Plans under parent. Proposals with
 // no subtasks, duplicate or dangling ids, or dependency cycles are dropped.
 func (r *run) buildPlans(parent *Task, proposals []PlanProposal) []*Plan {
-	var plans []*Plan
+	var valid []PlanProposal
 	for _, pp := range proposals {
-		if len(plans) == r.engine.maxPlans {
+		if len(valid) == r.engine.maxPlans {
 			break
 		}
-		if !validProposal(pp) {
-			continue
+		if validProposal(pp) {
+			valid = append(valid, pp)
 		}
-		p := &Plan{ID: parent.ID + ".p" + strconv.Itoa(len(plans)+1), Rationale: pp.Rationale, Status: StatusPending}
+	}
+	return newPlans(parent, valid, func(name string) string { return r.agent(name).Name })
+}
+
+// newPlans builds the Plans of parent from proposals, giving the plans and
+// subtasks their IDs in the tree. Proposals whose IDs are already the
+// tree's, as journaled, get the same IDs back.
+func newPlans(parent *Task, proposals []PlanProposal, agent func(string) string) []*Plan {
+	plans := make([]*Plan, len(proposals))
+	for i, pp := range proposals {
+		p := &Plan{ID: parent.ID + ".p" + strconv.Itoa(i+1), Rationale: pp.Rationale, Status: StatusPending}
 		ids := make(map[string]string, len(pp.Subtasks))
-		for i, sp := range pp.Subtasks {
-			ids[sp.ID] = p.ID + ".t" + strconv.Itoa(i+1)
+		for j, sp := range pp.Subtasks {
+			ids[sp.ID] = p.ID + ".t" + strconv.Itoa(j+1)
 		}
 		for _, sp := range pp.Subtasks {
-			st := &Task{ID: ids[sp.ID], Description: sp.Description, Agent: r.agent(sp.Agent).Name, Depth: parent.Depth + 1, Status: StatusPending}
+			st := &Task{ID: ids[sp.ID], Description: sp.Description, Agent: agent(sp.Agent), Depth: parent.Depth + 1, Status: StatusPending}
 			for _, d := range sp.DependsOn {
 				st.DependsOn = append(st.DependsOn, ids[d])
 			}
 			p.Subtasks = append(p.Subtasks, st)
 		}
-		plans = append(plans, p)
+		plans[i] = p
 	}
 	return plans
 }
@@ -470,6 +542,11 @@ func (r *run) explore(ctx context.Context, t *Task, b Brief, plans []*Plan) erro
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		// Plans canceled midway were not compared; finished ones are kept
+		// for a resume to choose among.
+		return err
+	}
 	if p == nil || p.Status != StatusDone {
 		return errors.New("strategy returned no successful plan")
 	}
@@ -491,6 +568,9 @@ func (x *exploration) Plans() []*Plan { return x.plans }
 func (x *exploration) Depth() int { return x.task.Depth }
 
 func (x *exploration) ScorePlan(ctx context.Context, p *Plan) *Score {
+	if p.PlanScore != nil {
+		return p.PlanScore // resumed
+	}
 	s, err := x.run.evaluator.ScorePlan(ctx, x.brief, proposalOf(p))
 	if err != nil {
 		return nil
@@ -501,6 +581,9 @@ func (x *exploration) ScorePlan(ctx context.Context, p *Plan) *Score {
 }
 
 func (x *exploration) ScoreResult(ctx context.Context, p *Plan) *Score {
+	if p.ResultScore != nil {
+		return p.ResultScore // resumed
+	}
 	s, err := x.run.evaluator.ScoreResult(ctx, x.brief, p.Output)
 	if err != nil {
 		return nil
@@ -511,11 +594,17 @@ func (x *exploration) ScoreResult(ctx context.Context, p *Plan) *Score {
 }
 
 func (x *exploration) Prune(p *Plan) {
+	if p.Status == StatusDone {
+		return // resumed
+	}
 	p.Status = StatusPruned
 	x.run.emit(Event{Kind: EventPlanPruned, TaskID: x.task.ID, PlanID: p.ID})
 }
 
 func (x *exploration) Execute(ctx context.Context, p *Plan) error {
+	if p.Status == StatusDone {
+		return nil // resumed
+	}
 	p.Status = StatusRunning
 	x.run.emit(Event{Kind: EventPlanStarted, TaskID: x.task.ID, PlanID: p.ID, Text: p.Rationale})
 	if err := x.run.executePlan(ctx, x.task, x.brief, p); err != nil {
@@ -573,13 +662,7 @@ func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *P
 				st.Status = StatusPruned
 				return
 			}
-			err := r.takeTask()
-			if err != nil {
-				st.Status, st.Error = StatusPruned, "not started: "+err.Error()
-			} else {
-				err = r.solve(ctx, st, path, inputs)
-			}
-			if err != nil {
+			if err := r.start(ctx, st, path, inputs); err != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err

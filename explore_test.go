@@ -330,6 +330,38 @@ func TestExceededLimitStopsBacktracking(t *testing.T) {
 	}
 }
 
+func TestLimitFailsTheRunEvenIfAParallelPlanSucceeded(t *testing.T) {
+	// Both root plans run side by side. "fast" finishes completely; then the
+	// second subtask of "slow" goes beyond MaxTasks. The run must fail, and
+	// keep "fast" done for a resume to choose among.
+	fastDone := make(chan struct{})
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(
+			plan("fast", sub{ID: "f", Description: "F"}),
+			plan("slow", sub{ID: "s1", Description: "S1"}, sub{ID: "s2", Description: "S2", DependsOn: []string{"s1"}}),
+		)).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			if taskOf(req) == "S1" {
+				<-fastDone
+			}
+			return echoTask(req)
+		}).
+		On(ethan.TagSynthesize, joinResults)
+	done := ethan.WithObserver(ethan.ObserverFunc(func(e ethan.Event) {
+		if e.Kind == ethan.EventPlanDone && e.PlanID == "t0.p1" {
+			close(fastDone)
+		}
+	}))
+
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1, MaxTasks: 3}), done).Run(context.Background(), "goal")
+	if !errors.Is(err, ethan.ErrTaskLimit) {
+		t.Fatalf("err = %v, want ErrTaskLimit", err)
+	}
+	if res.Root.Status != ethan.StatusFailed || res.Root.Plans[0].Status != ethan.StatusDone {
+		t.Errorf("root %s, fast plan %s; want failed and done", res.Root.Status, res.Root.Plans[0].Status)
+	}
+}
+
 func TestMaxConcurrencyLimitsModelCalls(t *testing.T) {
 	var inFlight, peak atomic.Int32
 	m := ethantest.New().

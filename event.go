@@ -38,6 +38,8 @@ type Event struct {
 	// Plans are the plans a task was decomposed into, on task_decided. Their
 	// subtask IDs and dependencies are the IDs of the tree.
 	Plans []PlanProposal `json:"plans,omitempty"`
+	// Agent is the root task's agent, on run_started.
+	Agent string `json:"agent,omitempty"`
 	// Usage is the tokens used by a task's own model calls so far, on
 	// task_done and task_failed, and by the Run, on run_done and run_failed.
 	Usage *Usage `json:"usage,omitempty"`

@@ -9,7 +9,7 @@ Given a goal, ethan grows an AND-OR task tree at runtime:
 - A **strategy** decides which plans to try. The default beam strategy scores the candidates, executes the best ones in parallel, adopts the best-scoring result and backtracks to the remaining plans on failure.
 - **Agents** with their own instructions, models and tools execute the leaves, and share findings through a per-run **blackboard**.
 - **Limits** bound depth, the number of tasks, tokens and concurrent model calls. They are checked mechanically: going beyond the task or token limit cancels the whole run with an error wrapping `ErrLimitExceeded`. How to spend a budget is left to the caller.
-- Every step is reported as an **event** and recorded in a JSON **trace**.
+- Every step is reported as an **event**. A **journal** records the events as they happen; `Replay` rebuilds the explored tree from it, and `Engine.Resume` continues a run that stopped, reusing every finished task, decision and score.
 
 > Status: experimental. The API may change.
 
@@ -59,6 +59,20 @@ go run ./examples/research -o report.md -trace trace.json "What changed in Go's 
 
 Progress is printed to stderr. `trace.json` contains the whole explored tree, including the rejected plans, scores, notes, events and token usage. Run `go run ./examples/research -h` for the limit and model flags.
 
+## Journal and resume
+
+```go
+j, _ := ethan.CreateJournal("run.jsonl")
+engine := ethan.New(model, ethan.WithJournal(j), ethan.WithLimits(ethan.Limits{MaxTokens: 300_000}))
+res, err := engine.Run(ctx, goal)
+if errors.Is(err, ethan.ErrLimitExceeded) {
+	events, _ := ethan.ReadJournal("run.jsonl")
+	res, err = engine.Resume(ctx, events) // limits apply to the resumed run alone
+}
+```
+
+`ethan.Replay(events)` rebuilds the `Result` of a journal without calling any model. The research demo takes `-journal run.jsonl` and `-resume`.
+
 ## Customizing
 
 | Component     | Interface     | Default                                | Option              |
@@ -70,6 +84,7 @@ Progress is printed to stderr. `trace.json` contains the whole explored tree, in
 | Strategy      | `Strategy`    | `BeamStrategy` (2 plans at the root, 1 below) | `WithStrategy` |
 | Agents        | `Agent`       | one generalist                         | `WithAgents`        |
 | Observer      | `Observer`    | none                                   | `WithObserver`      |
+| Journal       | `Journal`     | none (`FileJournal` for files)         | `WithJournal`       |
 
 Prompts are embedded Go templates. `ethan.DefaultTemplate(name)` returns a copy you can modify and pass to a component.
 

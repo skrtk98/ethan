@@ -1,7 +1,12 @@
 // Command research explores a research question with E.T.H.A.N. and Claude
 // and writes a report.
 //
-//	go run ./examples/research -o report.md -trace trace.json "question"
+//	go run ./examples/research -o report.md -journal run.jsonl "question"
+//
+// A run that stops, for a limit or otherwise, can be continued from its
+// journal:
+//
+//	go run ./examples/research -o report.md -journal run.jsonl -resume
 package main
 
 import (
@@ -20,6 +25,8 @@ func main() {
 	var (
 		out         = flag.String("o", "", "write the report to this file instead of stdout")
 		tracePath   = flag.String("trace", "", "write the JSON trace to this file")
+		journalPath = flag.String("journal", "", "record the run's events to this file so that it can be resumed")
+		resume      = flag.Bool("resume", false, "resume the run recorded in -journal instead of starting one")
 		model       = flag.String("model", anthropic.DefaultModel, "Claude model id")
 		effort      = flag.String("effort", "", "effort level: low, medium, high, xhigh or max")
 		maxDepth    = flag.Int("max-depth", 2, "depth at which tasks are no longer decomposed")
@@ -33,12 +40,12 @@ func main() {
 		quiet       = flag.Bool("q", false, "do not print progress to stderr")
 	)
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "usage: research [flags] question\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "usage: research [flags] question\n       research [flags] -journal file -resume\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
 	question := strings.Join(flag.Args(), " ")
-	if question == "" {
+	if *resume && *journalPath == "" || !*resume && question == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -75,9 +82,39 @@ func main() {
 	if !*quiet {
 		opts = append(opts, ethan.WithObserver(ethan.ObserverFunc(progress)))
 	}
+	var events []ethan.Event
+	if *resume {
+		var err error
+		if events, err = ethan.ReadJournal(*journalPath); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+	}
+	if *journalPath != "" {
+		j, err := ethan.CreateJournal(*journalPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		defer j.Close()
+		opts = append(opts, ethan.WithJournal(j))
+	}
 
-	res, err := ethan.New(control, opts...).Run(ctx, question)
-	if *tracePath != "" && res != nil {
+	engine := ethan.New(control, opts...)
+	var (
+		res *ethan.Result
+		err error
+	)
+	if *resume {
+		res, err = engine.Resume(ctx, events)
+	} else {
+		res, err = engine.Run(ctx, question)
+	}
+	if res == nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if *tracePath != "" {
 		if terr := writeTrace(*tracePath, res); terr != nil {
 			fmt.Fprintln(os.Stderr, "trace:", terr)
 		}
@@ -85,6 +122,9 @@ func main() {
 	fmt.Fprintf(os.Stderr, "tokens: %d in, %d out\n", res.Usage.InputTokens, res.Usage.OutputTokens)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
+		if *journalPath != "" {
+			fmt.Fprintf(os.Stderr, "continue with: research -journal %s -resume\n", *journalPath)
+		}
 		os.Exit(1)
 	}
 
@@ -119,6 +159,9 @@ func progress(e ethan.Event) {
 	line := fmt.Sprintf("%-14s %-16s", e.Kind, id)
 	if e.Score != nil {
 		line += fmt.Sprintf(" score=%.2f", e.Score.Value)
+	}
+	if e.Usage != nil {
+		line += fmt.Sprintf(" tokens=%d", e.Usage.Total())
 	}
 	switch e.Kind {
 	case ethan.EventTaskStarted, ethan.EventTaskDecided, ethan.EventPlanStarted, ethan.EventNoteAdded,
