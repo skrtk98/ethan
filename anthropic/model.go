@@ -107,6 +107,10 @@ func (m *Model) Generate(ctx context.Context, req ethan.Request) (*ethan.Respons
 			if req.Output != nil {
 				return out, fmt.Errorf("anthropic: structured output truncated at max_tokens (%d)", req.MaxTokens)
 			}
+			if len(out.ToolCalls()) > 0 {
+				// The last call's input may be cut short.
+				return out, fmt.Errorf("anthropic: tool call truncated at max_tokens (%d)", req.MaxTokens)
+			}
 		}
 		if req.Output != nil {
 			out.Output = json.RawMessage(out.Text())

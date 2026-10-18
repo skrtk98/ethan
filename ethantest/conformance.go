@@ -134,6 +134,22 @@ func TestModel(t *testing.T, fake Fake) {
 		}
 	})
 
+	t.Run("truncated tool call is not returned", func(t *testing.T) {
+		// A call cut off at the output limit may have partial arguments.
+		call := ethan.ToolCall{ID: "call-1", Name: "lookup", Input: json.RawMessage(`{"q":"x"}`)}
+		m, _ := fake(t, []Turn{{ToolCalls: []ethan.ToolCall{call}, Usage: usage, Truncated: true}})
+		resp, err := m.Generate(context.Background(), ethan.Request{
+			Messages: []ethan.Message{ethan.UserText("find x")}, MaxTokens: 5,
+			Tools: []ethan.ToolSpec{{Name: "lookup", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		})
+		if err == nil {
+			t.Fatal("no error")
+		}
+		if resp == nil || resp.Usage != usage {
+			t.Errorf("response %+v, want usage %+v", resp, usage)
+		}
+	})
+
 	t.Run("API error", func(t *testing.T) {
 		m, _ := fake(t, []Turn{{Fail: true}})
 		if _, err := m.Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("hi")}, MaxTokens: 10}); err == nil {

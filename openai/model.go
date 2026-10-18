@@ -105,6 +105,10 @@ func (m *Model) Generate(ctx context.Context, req ethan.Request) (*ethan.Respons
 			if req.Output != nil {
 				return out, fmt.Errorf("openai: structured output truncated at max_output_tokens (%d)", req.MaxTokens)
 			}
+			if len(out.ToolCalls()) > 0 {
+				// The last call's arguments may be cut short.
+				return out, fmt.Errorf("openai: tool call truncated at max_output_tokens (%d)", req.MaxTokens)
+			}
 		default:
 			return out, fmt.Errorf("openai: response incomplete: %s", reason)
 		}
