@@ -14,6 +14,7 @@ const (
 	EventTaskDecided  EventKind = "task_decided" // Text is "atomic" or the number of plans
 	EventTaskDone     EventKind = "task_done"
 	EventTaskFailed   EventKind = "task_failed"
+	EventTaskPruned   EventKind = "task_pruned" // Text is why the task was not started
 	EventPlanScored   EventKind = "plan_scored"
 	EventPlanStarted  EventKind = "plan_started"
 	EventPlanDone     EventKind = "plan_done"
@@ -22,6 +23,7 @@ const (
 	EventResultScored EventKind = "result_scored"
 	EventPlanChosen   EventKind = "plan_chosen"
 	EventNoteAdded    EventKind = "note_added"
+	EventUsage        EventKind = "usage" // a model call's usage; Text is the request's tag
 )
 
 // Event reports progress of a Run. The events of a Run, in order, are
@@ -40,8 +42,10 @@ type Event struct {
 	Plans []PlanProposal `json:"plans,omitempty"`
 	// Agent is the root task's agent, on run_started.
 	Agent string `json:"agent,omitempty"`
-	// Usage is the tokens used by a task's own model calls so far, on
-	// task_done and task_failed, and by the Run, on run_done and run_failed.
+	// Usage is the tokens used by one model call made for the task, on
+	// usage; by the task's own model calls so far, on task_done and
+	// task_failed; and by the Run and those it resumed, on run_done and
+	// run_failed. Replay counts the usage events.
 	Usage *Usage `json:"usage,omitempty"`
 }
 

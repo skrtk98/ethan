@@ -23,7 +23,7 @@ func TestJournalRecordsEveryEvent(t *testing.T) {
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults)
 
-	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1}), ethan.WithJournal(j)).Run(context.Background(), "goal")
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1})).Run(context.Background(), "goal", ethan.JournalTo(j))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +111,8 @@ func TestJournalFailureCancelsTheRun(t *testing.T) {
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults)
 
-	_, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1}), ethan.WithJournal(&failingJournal{n: 3})).
-		Run(context.Background(), "goal")
+	_, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1})).
+		Run(context.Background(), "goal", ethan.JournalTo(&failingJournal{n: 3}))
 	if err == nil || !strings.Contains(err.Error(), "disk full") {
 		t.Fatalf("err = %v, want the journal's failure", err)
 	}

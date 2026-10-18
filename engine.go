@@ -25,7 +25,6 @@ type Engine struct {
 	limits          Limits
 	executeTemplate *template.Template
 	observers       []Observer
-	journal         Journal
 	notesInPrompt   int
 	maxPlans        int
 	maxTokens       int
@@ -73,12 +72,6 @@ func WithExecuteTemplate(t *template.Template) Option {
 // WithObserver adds an observer that receives the events of every Run.
 func WithObserver(o Observer) Option {
 	return func(e *Engine) { e.observers = append(e.observers, o) }
-}
-
-// WithJournal records the events of every Run in j, so that a Run can be
-// traced and resumed after it stops. A Run whose journal fails is canceled.
-func WithJournal(j Journal) Option {
-	return func(e *Engine) { e.journal = j }
 }
 
 // WithNotesInPrompt sets how many of the latest blackboard notes are shown
@@ -139,10 +132,10 @@ func (r *Result) WriteTrace(w io.Writer) error {
 // Run solves goal and returns the root task's output. On failure the
 // returned Result still holds the explored tree. When a limit is exceeded
 // the whole Run is canceled and the error wraps ErrLimitExceeded.
-func (e *Engine) Run(ctx context.Context, goal string) (*Result, error) {
+func (e *Engine) Run(ctx context.Context, goal string, opts ...RunOption) (*Result, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	r := e.newRun(goal, cancel)
+	r := e.newRun(goal, cancel, opts)
 	root := &Task{ID: "t0", Description: goal, Agent: e.agents[0].Name, Status: StatusPending}
 	r.emit(Event{Kind: EventRunStarted, Text: goal, Agent: root.Agent})
 	return r.finish(ctx, root, r.start(ctx, root, nil, nil))
@@ -154,9 +147,9 @@ func (e *Engine) Run(ctx context.Context, goal string) (*Result, error) {
 // that were running when the run stopped, is solved again. Limits apply to
 // the resumed run alone, while Result.Usage includes the earlier runs.
 //
-// To keep the journal complete, give the Engine the same journal to append
-// to. The returned Result holds the events of the earlier runs too.
-func (e *Engine) Resume(ctx context.Context, events []Event) (*Result, error) {
+// To keep the journal complete, pass JournalTo with the same journal to
+// append to. The returned Result holds the events of the earlier runs too.
+func (e *Engine) Resume(ctx context.Context, events []Event, opts ...RunOption) (*Result, error) {
 	s, err := replay(events)
 	if err != nil {
 		return nil, err
@@ -165,7 +158,7 @@ func (e *Engine) Resume(ctx context.Context, events []Event) (*Result, error) {
 	defer cancel(nil)
 	root := s.root
 	reopen(root)
-	r := e.newRun(root.Description, cancel)
+	r := e.newRun(root.Description, cancel, opts)
 	r.prior = s.usage()
 	r.board.notes = s.notes
 	r.events = slices.Clone(events)
@@ -173,8 +166,22 @@ func (e *Engine) Resume(ctx context.Context, events []Event) (*Result, error) {
 	return r.finish(ctx, root, r.start(ctx, root, nil, nil))
 }
 
-func (e *Engine) newRun(goal string, cancel context.CancelCauseFunc) *run {
+// RunOption configures one Run or Resume.
+type RunOption func(*run)
+
+// JournalTo records the events of the run in j as they happen, so that it
+// can be traced and resumed after it stops. A journal holds one run and the
+// Resumes that continue it: give each Run a journal of its own. The run is
+// canceled if j fails.
+func JournalTo(j Journal) RunOption {
+	return func(r *run) { r.journal = j }
+}
+
+func (e *Engine) newRun(goal string, cancel context.CancelCauseFunc, opts []RunOption) *run {
 	r := &run{engine: e, goal: goal, cancel: cancel, sem: make(chan struct{}, e.limits.MaxConcurrency), board: &Blackboard{}}
+	for _, o := range opts {
+		o(r)
+	}
 	r.model = r.meter(e.model)
 	r.planner = e.planner
 	if r.planner == nil {
@@ -238,6 +245,7 @@ type run struct {
 
 	emitMu     sync.Mutex
 	events     []Event
+	journal    Journal
 	journalErr error
 
 	mu      sync.Mutex
@@ -273,18 +281,26 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 		return nil, r.exceed(ErrTokenLimit)
 	}
 	resp, err := mm.model.Generate(ctx, req)
-	if resp != nil {
-		r.mu.Lock()
-		r.spent = r.spent.Add(resp.Usage)
-		spent = r.spent.Total()
-		if t, ok := ctx.Value(taskKey{}).(*Task); ok {
-			t.Usage = t.Usage.Add(resp.Usage)
-		}
-		r.mu.Unlock()
-		if limit > 0 && spent > limit {
-			// The response is paid for and still used; the rest of the run stops.
-			r.exceed(ErrTokenLimit)
-		}
+	if resp == nil {
+		return nil, err
+	}
+	t, _ := ctx.Value(taskKey{}).(*Task)
+	r.mu.Lock()
+	r.spent = r.spent.Add(resp.Usage)
+	spent = r.spent.Total()
+	if t != nil {
+		t.Usage = t.Usage.Add(resp.Usage)
+	}
+	r.mu.Unlock()
+	usage := resp.Usage
+	e := Event{Kind: EventUsage, Text: req.Tag, Usage: &usage}
+	if t != nil {
+		e.TaskID = t.ID
+	}
+	r.emit(e)
+	if limit > 0 && spent > limit {
+		// The response is paid for but not used: the run stops here.
+		return resp, r.exceed(ErrTokenLimit)
 	}
 	return resp, err
 }
@@ -323,7 +339,7 @@ func (r *run) emit(e Event) {
 	r.emitMu.Lock()
 	defer r.emitMu.Unlock()
 	r.events = append(r.events, e)
-	if j := r.engine.journal; j != nil && r.journalErr == nil {
+	if j := r.journal; j != nil && r.journalErr == nil {
 		if err := j.Append(e); err != nil {
 			r.journalErr = fmt.Errorf("ethan: journal: %w", err)
 			r.stop(r.journalErr)
@@ -382,10 +398,16 @@ func (r *run) start(ctx context.Context, t *Task, path []string, inputs []Subtas
 		return nil
 	}
 	if err := r.takeTask(); err != nil {
-		t.Status, t.Error = StatusPruned, "not started: "+err.Error()
+		r.prune(t, "not started: "+err.Error())
 		return err
 	}
 	return r.solve(ctx, t, path, inputs)
+}
+
+// prune records that t was not started, and why.
+func (r *run) prune(t *Task, reason string) {
+	t.Status, t.Error = StatusPruned, reason
+	r.emit(Event{Kind: EventTaskPruned, TaskID: t.ID, Text: reason})
 }
 
 // solve solves t, recording its outcome on t. path holds the ancestors'
@@ -419,6 +441,9 @@ func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []Su
 		d, err := r.planner.Plan(ctx, r.planRequest(t, b))
 		switch {
 		case ctx.Err() != nil:
+			if err == nil {
+				return ctx.Err() // the decision came too late to be used
+			}
 			return fmt.Errorf("plan: %w", err)
 		case err == nil && !d.Atomic:
 			if plans := r.buildPlans(t, d.Plans); len(plans) > 0 {
@@ -653,13 +678,13 @@ func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *P
 				<-done[d] // every subtask closes its channel, even when skipped
 				dep := byID[d]
 				if dep.Status != StatusDone {
-					st.Status = StatusPruned
+					r.prune(st, "dependency "+dep.ID+" did not finish")
 					return
 				}
 				inputs = append(inputs, SubtaskResult{Description: dep.Description, Output: dep.Output})
 			}
 			if ctx.Err() != nil {
-				st.Status = StatusPruned
+				r.prune(st, "canceled")
 				return
 			}
 			if err := r.start(ctx, st, path, inputs); err != nil {

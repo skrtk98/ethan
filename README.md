@@ -63,15 +63,15 @@ Progress is printed to stderr. `trace.json` contains the whole explored tree, in
 
 ```go
 j, _ := ethan.CreateJournal("run.jsonl")
-engine := ethan.New(model, ethan.WithJournal(j), ethan.WithLimits(ethan.Limits{MaxTokens: 300_000}))
-res, err := engine.Run(ctx, goal)
+engine := ethan.New(model, ethan.WithLimits(ethan.Limits{MaxTokens: 300_000}))
+res, err := engine.Run(ctx, goal, ethan.JournalTo(j))
 if errors.Is(err, ethan.ErrLimitExceeded) {
 	events, _ := ethan.ReadJournal("run.jsonl")
-	res, err = engine.Resume(ctx, events) // limits apply to the resumed run alone
+	res, err = engine.Resume(ctx, events, ethan.JournalTo(j)) // limits apply to the resumed run alone
 }
 ```
 
-`ethan.Replay(events)` rebuilds the `Result` of a journal without calling any model. The research demo takes `-journal run.jsonl` and `-resume`.
+A journal holds one run and the resumes that continue it. `ethan.Replay(events)` rebuilds the `Result` of a journal without calling any model. The research demo takes `-journal run.jsonl` and `-resume`.
 
 ## Customizing
 
@@ -84,7 +84,7 @@ if errors.Is(err, ethan.ErrLimitExceeded) {
 | Strategy      | `Strategy`    | `BeamStrategy` (2 plans at the root, 1 below) | `WithStrategy` |
 | Agents        | `Agent`       | one generalist                         | `WithAgents`        |
 | Observer      | `Observer`    | none                                   | `WithObserver`      |
-| Journal       | `Journal`     | none (`FileJournal` for files)         | `WithJournal`       |
+| Journal       | `Journal`     | none (`FileJournal` for files)         | `JournalTo` (per run) |
 
 Prompts are embedded Go templates. `ethan.DefaultTemplate(name)` returns a copy you can modify and pass to a component.
 

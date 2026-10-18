@@ -22,6 +22,7 @@ type replayed struct {
 	root  *Task
 	notes []Note
 	err   string // the last run's error, if it failed
+	total Usage  // of every model call journaled
 }
 
 func replay(events []Event) (*replayed, error) {
@@ -32,6 +33,9 @@ func replay(events []Event) (*replayed, error) {
 	tasks := map[string]*Task{"t0": s.root}
 	plans := map[string]*Plan{}
 	for i, e := range events {
+		if i > 0 && e.Kind == EventRunStarted {
+			return nil, fmt.Errorf("ethan: journal event %d: a second run starts; a journal holds one run", i+1)
+		}
 		var (
 			t *Task
 			p *Plan
@@ -40,7 +44,7 @@ func replay(events []Event) (*replayed, error) {
 			if p = plans[e.PlanID]; p == nil {
 				return nil, fmt.Errorf("ethan: journal event %d: unknown plan %s", i+1, e.PlanID)
 			}
-		} else if e.TaskID != "" && e.Kind != EventNoteAdded {
+		} else if e.TaskID != "" && e.Kind != EventNoteAdded && e.Kind != EventUsage {
 			if t = tasks[e.TaskID]; t == nil {
 				return nil, fmt.Errorf("ethan: journal event %d: unknown task %s", i+1, e.TaskID)
 			}
@@ -66,10 +70,16 @@ func replay(events []Event) (*replayed, error) {
 			}
 		case EventTaskDone:
 			t.Status, t.Output, t.Score, t.Error = StatusDone, e.Text, e.Score, ""
-			t.Usage = usageOf(e)
 		case EventTaskFailed:
 			t.Status, t.Error = StatusFailed, e.Text
-			t.Usage = usageOf(e)
+		case EventTaskPruned:
+			t.Status, t.Error = StatusPruned, e.Text
+		case EventUsage:
+			u := usageOf(e)
+			s.total = s.total.Add(u)
+			if t := tasks[e.TaskID]; t != nil {
+				t.Usage = t.Usage.Add(u)
+			}
 		case EventPlanScored:
 			p.PlanScore = e.Score
 		case EventPlanStarted:
@@ -83,7 +93,8 @@ func replay(events []Event) (*replayed, error) {
 		case EventResultScored:
 			p.ResultScore = e.Score
 		case EventPlanChosen:
-			tasks[e.TaskID].Chosen = e.PlanID
+			t := tasks[e.TaskID]
+			t.Chosen, t.Output, t.Score = p.ID, p.Output, p.ResultScore
 		case EventNoteAdded:
 			s.notes = append(s.notes, Note{Author: e.TaskID, Text: e.Text, Time: e.Time})
 		}
@@ -98,27 +109,21 @@ func usageOf(e Event) Usage {
 	return *e.Usage
 }
 
-// usage is the total of the tasks' recorded usage.
-func (s *replayed) usage() Usage {
-	var total Usage
-	var walk func(t *Task)
-	walk = func(t *Task) {
-		total = total.Add(t.Usage)
-		for _, p := range t.Plans {
-			for _, st := range p.Subtasks {
-				walk(st)
-			}
-		}
-	}
-	walk(s.root)
-	return total
-}
+// usage is the total of the journaled model calls.
+func (s *replayed) usage() Usage { return s.total }
 
 // reopen prepares t for a resumed run: whatever did not finish is pending
 // again, while finished tasks and plans, decisions and scores are kept.
 func reopen(t *Task) {
 	if t.Status == StatusDone {
 		return
+	}
+	for _, p := range t.Plans {
+		if p.ID == t.Chosen && p.Status == StatusDone {
+			// The run stopped after choosing, before recording the task done.
+			t.Status, t.Error = StatusDone, ""
+			return
+		}
 	}
 	t.Status, t.Error, t.Chosen = StatusPending, "", ""
 	for _, p := range t.Plans {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/skrtk98/ethan"
@@ -30,8 +31,8 @@ func TestResumeContinuesWhereTheRunStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The plan (20) and A (20) reach the limit: B never starts.
-	_, err = ethan.New(chain(), ethan.WithLimits(ethan.Limits{MaxDepth: 1, MaxTokens: 40}), ethan.WithJournal(j)).
-		Run(context.Background(), "goal")
+	_, err = ethan.New(chain(), ethan.WithLimits(ethan.Limits{MaxDepth: 1, MaxTokens: 40})).
+		Run(context.Background(), "goal", ethan.JournalTo(j))
 	if !errors.Is(err, ethan.ErrTokenLimit) {
 		t.Fatalf("first run: err = %v, want ErrTokenLimit", err)
 	}
@@ -41,7 +42,7 @@ func TestResumeContinuesWhereTheRunStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := chain()
-	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1}), ethan.WithJournal(j)).Resume(context.Background(), events)
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1})).Resume(context.Background(), events, ethan.JournalTo(j))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,5 +150,142 @@ func TestReplayRejectsForeignEvents(t *testing.T) {
 	}
 	if _, err := ethan.Replay([]ethan.Event{{Kind: ethan.EventRunStarted, Text: "g"}, {Kind: ethan.EventTaskDone, TaskID: "t9"}}); err == nil {
 		t.Error("an unknown task was accepted")
+	}
+	if _, err := ethan.Replay([]ethan.Event{{Kind: ethan.EventRunStarted, Text: "g"}, {Kind: ethan.EventRunStarted, Text: "h"}}); err == nil {
+		t.Error("two runs in one journal were accepted")
+	}
+}
+
+func TestReplayRebuildsAStoppedRun(t *testing.T) {
+	// Some subtasks are never started; that, too, must be in the journal.
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p",
+			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}},
+			sub{ID: "c", Description: "C", DependsOn: []string{"b"}},
+		))).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults)
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1, MaxTasks: 2})).Run(context.Background(), "goal")
+	if !errors.Is(err, ethan.ErrTaskLimit) {
+		t.Fatalf("err = %v, want ErrTaskLimit", err)
+	}
+	replayed, err := ethan.Replay(res.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.Marshal(res.Root)
+	got, _ := json.Marshal(replayed.Root)
+	if string(got) != string(want) {
+		t.Errorf("replayed tree differs:\n got %s\nwant %s", got, want)
+	}
+	if replayed.Error != res.Error || replayed.Usage != res.Usage {
+		t.Errorf("replayed error %q usage %+v, want %q %+v", replayed.Error, replayed.Usage, res.Error, res.Usage)
+	}
+}
+
+// cut returns events up to and including the first one matching kind and
+// task, as if the process had died right after writing it.
+func cut(t *testing.T, events []ethan.Event, kind ethan.EventKind, task string) []ethan.Event {
+	t.Helper()
+	for i, e := range events {
+		if e.Kind == kind && e.TaskID == task {
+			return events[:i+1]
+		}
+	}
+	t.Fatalf("no %s event for %s", kind, task)
+	return nil
+}
+
+func TestResumeAfterTheChoiceFinishesTheTask(t *testing.T) {
+	// One plan at a time: "bad" fails, "good" succeeds and is chosen. The
+	// process dies right after recording the choice; resuming must not try
+	// "bad" again.
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("bad", sub{ID: "x", Description: "BAD"}), plan("good", sub{ID: "x", Description: "GOOD"}))).
+		On(ethan.TagScorePlan, scoreBy(map[string]float64{"bad": 0.9, "good": 0.5})).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			if taskOf(req) == "BAD" {
+				return nil, errors.New("boom")
+			}
+			return echoTask(req)
+		}).
+		On(ethan.TagSynthesize, joinResults)
+	beam1 := ethan.WithStrategy(ethan.BeamStrategy{Width: 1})
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1}), beam1).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	again := ethantest.New() // answers nothing
+	resumed, err := ethan.New(again, beam1).Resume(context.Background(), cut(t, res.Events, ethan.EventPlanChosen, "t0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Output != "out(GOOD)" || len(again.Calls(ethan.TagExecute)) != 0 {
+		t.Errorf("Output = %q after %d executions; want out(GOOD) and none", resumed.Output, len(again.Calls(ethan.TagExecute)))
+	}
+}
+
+func TestUsageIsJournaledPerCall(t *testing.T) {
+	res, err := ethan.New(chain(), ethan.WithLimits(ethan.Limits{MaxDepth: 1})).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The process dies right after A's call, before A is recorded done.
+	replayed, err := ethan.Replay(cut(t, res.Events, ethan.EventUsage, "t0.p1.t1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := replayed.Usage.Total(), 2*ethantest.DefaultUsage.Total(); got != want {
+		t.Errorf("Usage = %d, want %d for the plan and A's call", got, want)
+	}
+}
+
+func TestNoToolRunsAfterTheTokenLimit(t *testing.T) {
+	// The execution's response carries the total past the limit and asks for
+	// a note; the note must not be posted.
+	m := ethantest.New().
+		On(ethan.TagPlan, atomicPlan()).
+		On(ethan.TagExecute, func(ethan.Request) (*ethan.Response, error) {
+			return &ethan.Response{Usage: ethantest.DefaultUsage, Parts: []ethan.Part{{ToolCall: &ethan.ToolCall{
+				ID: "c1", Name: "note", Input: json.RawMessage(`{"text":"posted too late"}`),
+			}}}}, nil
+		})
+
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxTokens: 30})).Run(context.Background(), "goal")
+	if !errors.Is(err, ethan.ErrTokenLimit) {
+		t.Fatalf("err = %v, want ErrTokenLimit", err)
+	}
+	if len(res.Notes) != 0 {
+		t.Errorf("notes = %v", res.Notes)
+	}
+}
+
+func TestNoToolRunsOnceTheRunIsCanceled(t *testing.T) {
+	// Whichever of A and B starts second goes beyond MaxTasks while the
+	// other's call is in flight; that response then asks for a note, which
+	// must not be posted.
+	var once sync.Once
+	pruned2 := make(chan struct{})
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			<-pruned2
+			return &ethan.Response{Usage: ethantest.DefaultUsage, Parts: []ethan.Part{{ToolCall: &ethan.ToolCall{
+				ID: "c1", Name: "note", Input: json.RawMessage(`{"text":"posted after the cancel"}`),
+			}}}}, nil
+		})
+	onPrune := ethan.WithObserver(ethan.ObserverFunc(func(e ethan.Event) {
+		if e.Kind == ethan.EventTaskPruned {
+			once.Do(func() { close(pruned2) })
+		}
+	}))
+
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1, MaxTasks: 2}), onPrune).Run(context.Background(), "goal")
+	if !errors.Is(err, ethan.ErrTaskLimit) {
+		t.Fatalf("err = %v, want ErrTaskLimit", err)
+	}
+	if len(res.Notes) != 0 {
+		t.Errorf("notes = %v", res.Notes)
 	}
 }

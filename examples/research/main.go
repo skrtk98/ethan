@@ -82,7 +82,10 @@ func main() {
 	if !*quiet {
 		opts = append(opts, ethan.WithObserver(ethan.ObserverFunc(progress)))
 	}
-	var events []ethan.Event
+	var (
+		events  []ethan.Event
+		runOpts []ethan.RunOption
+	)
 	if *resume {
 		var err error
 		if events, err = ethan.ReadJournal(*journalPath); err != nil {
@@ -97,7 +100,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer j.Close()
-		opts = append(opts, ethan.WithJournal(j))
+		runOpts = append(runOpts, ethan.JournalTo(j))
 	}
 
 	engine := ethan.New(control, opts...)
@@ -106,9 +109,9 @@ func main() {
 		err error
 	)
 	if *resume {
-		res, err = engine.Resume(ctx, events)
+		res, err = engine.Resume(ctx, events, runOpts...)
 	} else {
-		res, err = engine.Run(ctx, question)
+		res, err = engine.Run(ctx, question, runOpts...)
 	}
 	if res == nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -152,6 +155,9 @@ func writeTrace(path string, res *ethan.Result) error {
 
 // progress prints a one-line summary of each event.
 func progress(e ethan.Event) {
+	if e.Kind == ethan.EventUsage {
+		return // one per model call; task_done and task_failed sum them up
+	}
 	id := e.TaskID
 	if e.PlanID != "" {
 		id = e.PlanID

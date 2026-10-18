@@ -305,8 +305,12 @@ func TestCallPastTheTokenLimitCancelsCallsInFlight(t *testing.T) {
 	if !errors.Is(err, ethan.ErrTokenLimit) {
 		t.Fatalf("err = %v, want ErrTokenLimit", err)
 	}
-	if a, b := res.Root.Plans[0].Subtasks[0], res.Root.Plans[0].Subtasks[1]; a.Status != ethan.StatusDone || b.Status != ethan.StatusFailed {
-		t.Errorf("A %s, B %s; want A done (its tokens are spent) and B failed", a.Status, b.Status)
+	// A's response is paid for, so it counts, but it is not used.
+	if a, b := res.Root.Plans[0].Subtasks[0], res.Root.Plans[0].Subtasks[1]; a.Status != ethan.StatusFailed || b.Status != ethan.StatusFailed {
+		t.Errorf("A %s, B %s; want both failed", a.Status, b.Status)
+	}
+	if res.Usage.Total() != 40 {
+		t.Errorf("Usage = %d, want 40 including A's response", res.Usage.Total())
 	}
 }
 
