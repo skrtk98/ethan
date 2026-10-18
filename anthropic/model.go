@@ -33,6 +33,7 @@ type Model struct {
 	webSearch     bool
 	webSearchUses int64
 	fallbacks     bool
+	cache         bool
 }
 
 // Option configures a Model.
@@ -50,6 +51,12 @@ func WithWebSearch(maxUses int) Option {
 	return func(m *Model) { m.webSearch, m.webSearchUses = true, int64(maxUses) }
 }
 
+// WithoutCache stops marking requests for prompt caching. By default each
+// request asks the API to cache its prompt up to the last cacheable block,
+// so that the next turn of a tool loop, or a call with the same system
+// prompt and tools, reads it at a lower rate.
+func WithoutCache() Option { return func(m *Model) { m.cache = false } }
+
 // WithoutFallbacks disables server-side refusal fallbacks. They are only
 // available on the Claude API; disable them when targeting other platforms.
 func WithoutFallbacks() Option { return func(m *Model) { m.fallbacks = false } }
@@ -62,7 +69,7 @@ func WithClientOptions(opts ...option.RequestOption) Option {
 
 // New returns a Model.
 func New(opts ...Option) *Model {
-	m := &Model{model: DefaultModel, fallbacks: true}
+	m := &Model{model: DefaultModel, fallbacks: true, cache: true}
 	for _, o := range opts {
 		o(m)
 	}
@@ -116,6 +123,9 @@ func (m *Model) params(req ethan.Request) (sdk.BetaMessageNewParams, error) {
 	}
 	if req.System != "" {
 		p.System = []sdk.BetaTextBlockParam{{Text: req.System}}
+	}
+	if m.cache {
+		p.CacheControl = sdk.NewBetaCacheControlEphemeralParam()
 	}
 	if m.fallbacks {
 		p.Betas = append(p.Betas, sdk.AnthropicBetaServerSideFallback2026_07_01)
@@ -223,7 +233,9 @@ func parts(content []sdk.BetaContentBlockUnion) []ethan.Part {
 
 func usage(u sdk.BetaUsage) ethan.Usage {
 	return ethan.Usage{
-		InputTokens:  int(u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens),
-		OutputTokens: int(u.OutputTokens),
+		InputTokens:      int(u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens),
+		OutputTokens:     int(u.OutputTokens),
+		CacheReadTokens:  int(u.CacheReadInputTokens),
+		CacheWriteTokens: int(u.CacheCreationInputTokens),
 	}
 }

@@ -88,7 +88,7 @@ A journal holds one run and the resumes that continue it. `ethan.Replay(events)`
 
 Prompts are embedded Go templates. `ethan.DefaultTemplate(name)` returns a copy you can modify and pass to a component.
 
-Tools implement `Tool` (`Spec` and `Call`). Server-side tools such as web search are adapter options (`anthropic.WithWebSearch`).
+Tools implement `Tool` (`Spec` and `Call`). Server-side tools such as web search are adapter options (`anthropic.WithWebSearch`). The Claude adapter asks for prompt caching on every request (`anthropic.WithoutCache` turns it off); `Usage` reports cached input tokens in `CacheReadTokens` and `CacheWriteTokens`, which are part of `InputTokens`.
 
 ## Testing
 

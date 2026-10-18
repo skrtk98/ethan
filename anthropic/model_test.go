@@ -187,3 +187,30 @@ func TestFailedContinuationKeepsUsage(t *testing.T) {
 		t.Errorf("usage of the first call was lost: %+v", resp)
 	}
 }
+
+func TestPromptCaching(t *testing.T) {
+	cached := `{"id":"msg","type":"message","role":"assistant","model":"m","stop_reason":"end_turn",` +
+		`"content":[{"type":"text","text":"ok"}],` +
+		`"usage":{"input_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":3}}`
+	f := &fakeAPI{responses: []string{cached, cached}}
+	req := ethan.Request{Messages: []ethan.Message{ethan.UserText("hi")}, MaxTokens: 10}
+
+	resp, err := newModel(t, f).Generate(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cc, _ := f.bodies[0]["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
+		t.Errorf("cache_control = %v", f.bodies[0]["cache_control"])
+	}
+	want := ethan.Usage{InputTokens: 125, OutputTokens: 3, CacheReadTokens: 100, CacheWriteTokens: 20}
+	if resp.Usage != want {
+		t.Errorf("Usage = %+v, want %+v", resp.Usage, want)
+	}
+
+	if _, err := newModel(t, f, anthropic.WithoutCache()).Generate(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.bodies[1]["cache_control"]; ok {
+		t.Error("cache_control sent with WithoutCache")
+	}
+}

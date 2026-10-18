@@ -128,8 +128,13 @@ func (r *Response) ToolCalls() []*ToolCall {
 
 // Usage counts tokens consumed by model calls.
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
+	InputTokens  int `json:"input_tokens"` // cached tokens included
 	OutputTokens int `json:"output_tokens"`
+	// CacheReadTokens and CacheWriteTokens are the parts of InputTokens read
+	// from and written to the provider's prompt cache, as far as the
+	// provider reports them. They are usually billed at other rates.
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 }
 
 // Total returns input plus output tokens.
@@ -137,5 +142,10 @@ func (u Usage) Total() int { return u.InputTokens + u.OutputTokens }
 
 // Add returns the sum of u and o.
 func (u Usage) Add(o Usage) Usage {
-	return Usage{InputTokens: u.InputTokens + o.InputTokens, OutputTokens: u.OutputTokens + o.OutputTokens}
+	return Usage{
+		InputTokens:      u.InputTokens + o.InputTokens,
+		OutputTokens:     u.OutputTokens + o.OutputTokens,
+		CacheReadTokens:  u.CacheReadTokens + o.CacheReadTokens,
+		CacheWriteTokens: u.CacheWriteTokens + o.CacheWriteTokens,
+	}
 }
