@@ -19,7 +19,13 @@ Given a goal, ethan grows an AND-OR task tree at runtime:
 go get github.com/skrtk98/ethan
 ```
 
-Requires Go 1.26 or later. The core package depends only on the standard library. The Claude adapter lives in `github.com/skrtk98/ethan/anthropic`.
+Requires Go 1.26 or later. The core package depends only on the standard library. Model adapters live in their own packages:
+
+| Provider | Package | Notes |
+|---|---|---|
+| Claude | `github.com/skrtk98/ethan/anthropic` | reads `ANTHROPIC_API_KEY` |
+| OpenAI | `github.com/skrtk98/ethan/openai` | Responses API; reads `OPENAI_API_KEY` |
+| Ollama and other Responses API servers | `github.com/skrtk98/ethan/openai` | `openai.WithBaseURL("http://localhost:11434/v1/")` |
 
 ## Quick start
 
@@ -57,7 +63,7 @@ export ANTHROPIC_API_KEY=...
 go run ./examples/research -o report.md -trace trace.json "What changed in Go's generics between 1.18 and 1.26?"
 ```
 
-Progress is printed to stderr. `trace.json` contains the whole explored tree, including the rejected plans, scores, notes, events and token usage. Run `go run ./examples/research -h` for the limit and model flags.
+Add `-provider openai` to use OpenAI, or `-provider ollama` to use a local Ollama server (without web search). Progress is printed to stderr. `trace.json` contains the whole explored tree, including the rejected plans, scores, notes, events and token usage. Run `go run ./examples/research -h` for the limit and model flags.
 
 ## Journal and resume
 
@@ -88,7 +94,18 @@ A journal holds one run and the resumes that continue it. `ethan.Replay(events)`
 
 Prompts are embedded Go templates. `ethan.DefaultTemplate(name)` returns a copy you can modify and pass to a component.
 
-Tools implement `Tool` (`Spec` and `Call`). Server-side tools such as web search are adapter options (`anthropic.WithWebSearch`). The Claude adapter asks for prompt caching on every request (`anthropic.WithoutCache` turns it off); `Usage` reports cached input tokens in `CacheReadTokens` and `CacheWriteTokens`, which are part of `InputTokens`.
+Each agent can have a model of its own, from any provider:
+
+```go
+engine := ethan.New(anthropic.New(), // plans, evaluates and synthesizes
+	ethan.WithAgents(
+		ethan.Agent{Name: "researcher", Description: "Searches the web.", Model: openai.New(openai.WithWebSearch(5))},
+		ethan.Agent{Name: "analyst", Description: "Analyzes material it is given."}, // uses the engine's model
+	),
+)
+```
+
+Tools implement `Tool` (`Spec` and `Call`). Server-side tools such as web search are adapter options (`anthropic.WithWebSearch`, `openai.WithWebSearch`). The Claude adapter asks for prompt caching on every request (`anthropic.WithoutCache` turns it off); `Usage` reports cached input tokens in `CacheReadTokens` and `CacheWriteTokens`, which are part of `InputTokens`.
 
 ## Testing
 
@@ -96,8 +113,10 @@ Tools implement `Tool` (`Spec` and `Call`). Server-side tools such as web search
 
 ```sh
 go test -race ./...
-go test -tags live ./anthropic   # calls the real API
+go test -tags live ./anthropic ./openai   # calls the real APIs; OLLAMA_MODEL=gpt-oss:20b adds Ollama
 ```
+
+`ethantest.TestModel` checks that a model adapter maps requests and responses faithfully; each adapter runs it against a fake of its provider's API.
 
 ## Documentation
 
