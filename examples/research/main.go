@@ -11,8 +11,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"strings"
@@ -94,12 +96,15 @@ func main() {
 		}
 	}
 	if *journalPath != "" {
-		// A journal holds one run: a new run must not append to another's.
-		if fi, err := os.Stat(*journalPath); !*resume && err == nil && fi.Size() > 0 {
-			fmt.Fprintf(os.Stderr, "error: %s already holds a run; resume it with -resume or choose another file\n", *journalPath)
-			os.Exit(1)
+		// A journal holds one run: a new run gets a file of its own.
+		open := ethan.NewJournal
+		if *resume {
+			open = ethan.CreateJournal
 		}
-		j, err := ethan.CreateJournal(*journalPath)
+		j, err := open(*journalPath)
+		if errors.Is(err, fs.ErrExist) {
+			err = fmt.Errorf("%s already holds a run; resume it with -resume or choose another file", *journalPath)
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)

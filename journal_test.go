@@ -120,3 +120,15 @@ func TestJournalFailureCancelsTheRun(t *testing.T) {
 		t.Errorf("executed %d subtasks after the journal failed", n)
 	}
 }
+
+func TestNewJournalRefusesAnExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.jsonl")
+	j, err := ethan.NewJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+	if _, err := ethan.NewJournal(path); !errors.Is(err, os.ErrExist) {
+		t.Errorf("err = %v, want os.ErrExist", err)
+	}
+}

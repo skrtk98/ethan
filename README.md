@@ -62,12 +62,12 @@ Progress is printed to stderr. `trace.json` contains the whole explored tree, in
 ## Journal and resume
 
 ```go
-j, _ := ethan.CreateJournal("run.jsonl")
+j, _ := ethan.NewJournal("run.jsonl") // fails if the file exists; CreateJournal appends
 engine := ethan.New(model, ethan.WithLimits(ethan.Limits{MaxTokens: 300_000}))
 res, err := engine.Run(ctx, goal, ethan.JournalTo(j))
 if errors.Is(err, ethan.ErrLimitExceeded) {
 	events, _ := ethan.ReadJournal("run.jsonl")
-	res, err = engine.Resume(ctx, events, ethan.JournalTo(j)) // limits apply to the resumed run alone
+	res, err = engine.Resume(ctx, events, ethan.JournalTo(j)) // appends to the same file; limits apply to the resumed run alone
 }
 ```
 
