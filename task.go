@@ -30,6 +30,9 @@ type Task struct {
 	Output string `json:"output,omitempty"`
 	Score  *Score `json:"score,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Usage is the tokens used by the task's own model calls (planning,
+	// scoring its plans, executing it), not its subtasks'.
+	Usage Usage `json:"usage"`
 }
 
 // Plan is an AND node: all of its subtasks must succeed.

@@ -100,7 +100,7 @@ func TestObserverSeesTheExploration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kinds[0] != ethan.EventTaskStarted || kinds[len(kinds)-1] != ethan.EventTaskDone {
+	if kinds[0] != ethan.EventRunStarted || kinds[len(kinds)-1] != ethan.EventRunDone {
 		t.Errorf("events start with %s and end with %s", kinds[0], kinds[len(kinds)-1])
 	}
 	for _, k := range []ethan.EventKind{

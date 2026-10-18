@@ -25,6 +25,7 @@ type Engine struct {
 	limits          Limits
 	executeTemplate *template.Template
 	observers       []Observer
+	journal         Journal
 	notesInPrompt   int
 	maxPlans        int
 	maxTokens       int
@@ -72,6 +73,12 @@ func WithExecuteTemplate(t *template.Template) Option {
 // WithObserver adds an observer that receives the events of every Run.
 func WithObserver(o Observer) Option {
 	return func(e *Engine) { e.observers = append(e.observers, o) }
+}
+
+// WithJournal records the events of every Run in j, so that a Run can be
+// traced and resumed after it stops. A Run whose journal fails is canceled.
+func WithJournal(j Journal) Option {
+	return func(e *Engine) { e.journal = j }
 }
 
 // WithNotesInPrompt sets how many of the latest blackboard notes are shown
@@ -151,23 +158,38 @@ func (e *Engine) Run(ctx context.Context, goal string) (*Result, error) {
 	}
 
 	root := &Task{ID: "t0", Description: goal, Agent: e.agents[0].Name, Status: StatusPending}
+	r.emit(Event{Kind: EventRunStarted, Text: goal})
 	err := r.takeTask()
 	if err == nil {
 		err = r.solve(ctx, root, nil, nil)
 	}
-	if cause := context.Cause(ctx); err != nil && errors.Is(cause, ErrLimitExceeded) {
-		err = cause // rather than the cancellations it caused
+	return r.finish(ctx, root, err)
+}
+
+// finish records the end of the run and assembles its Result.
+func (r *run) finish(ctx context.Context, root *Task, err error) (*Result, error) {
+	if cause := context.Cause(ctx); err != nil && cause != nil {
+		err = cause // a limit or a journal failure rather than the cancellations it caused
 	}
-	res := &Result{Goal: goal, Output: root.Output, Score: root.Score, Root: root, Notes: r.board.Notes()}
+	r.mu.Lock()
+	usage := r.prior.Add(r.spent)
+	r.mu.Unlock()
+	if err != nil {
+		r.emit(Event{Kind: EventRunFailed, Text: err.Error(), Usage: &usage})
+	} else {
+		r.emit(Event{Kind: EventRunDone, Usage: &usage})
+	}
+	r.emitMu.Lock()
+	if err == nil && r.journalErr != nil {
+		err = r.journalErr
+	}
+	events := r.events
+	r.emitMu.Unlock()
+	res := &Result{Goal: r.goal, Output: root.Output, Score: root.Score, Root: root, Usage: usage,
+		Notes: r.board.Notes(), Events: events}
 	if err != nil {
 		res.Error = err.Error()
 	}
-	r.mu.Lock()
-	res.Usage = r.spent
-	r.mu.Unlock()
-	r.emitMu.Lock()
-	res.Events = r.events
-	r.emitMu.Unlock()
 	return res, err
 }
 
@@ -183,11 +205,13 @@ type run struct {
 	sem         chan struct{}
 	board       *Blackboard
 
-	emitMu sync.Mutex
-	events []Event
+	emitMu     sync.Mutex
+	events     []Event
+	journalErr error
 
 	mu    sync.Mutex
-	spent Usage
+	prior Usage // spent by the runs this one resumes
+	spent Usage // spent by this run, which Limits.MaxTokens bounds
 	tasks int
 }
 
@@ -221,6 +245,9 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 		r.mu.Lock()
 		r.spent = r.spent.Add(resp.Usage)
 		spent = r.spent.Total()
+		if t, ok := ctx.Value(taskKey{}).(*Task); ok {
+			t.Usage = t.Usage.Add(resp.Usage)
+		}
 		r.mu.Unlock()
 		if limit > 0 && spent > limit {
 			// The response is paid for and still used; the rest of the run stops.
@@ -228,6 +255,18 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 		}
 	}
 	return resp, err
+}
+
+// taskKey is the context key of the task whose model calls are made; their
+// usage is recorded on it.
+type taskKey struct{}
+
+// taskUsage returns a copy of t.Usage.
+func (r *run) taskUsage(t *Task) *Usage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	u := t.Usage
+	return &u
 }
 
 // exceed cancels the whole run because err, a limit, was exceeded.
@@ -242,6 +281,12 @@ func (r *run) emit(e Event) {
 	r.emitMu.Lock()
 	defer r.emitMu.Unlock()
 	r.events = append(r.events, e)
+	if j := r.engine.journal; j != nil && r.journalErr == nil {
+		if err := j.Append(e); err != nil {
+			r.journalErr = fmt.Errorf("ethan: journal: %w", err)
+			r.cancel(r.journalErr)
+		}
+	}
 	for _, o := range r.engine.observers {
 		o.OnEvent(e)
 	}
@@ -293,15 +338,16 @@ func (r *run) takeTask() error {
 func (r *run) solve(ctx context.Context, t *Task, path []string, inputs []SubtaskResult) error {
 	t.Status = StatusRunning
 	r.emit(Event{Kind: EventTaskStarted, TaskID: t.ID, Text: t.Description})
+	ctx = context.WithValue(ctx, taskKey{}, t)
 	err := r.solveTask(ctx, t, path, inputs)
 	if err != nil {
 		t.Status = StatusFailed
 		t.Error = err.Error()
-		r.emit(Event{Kind: EventTaskFailed, TaskID: t.ID, Text: t.Error})
+		r.emit(Event{Kind: EventTaskFailed, TaskID: t.ID, Text: t.Error, Usage: r.taskUsage(t)})
 		return fmt.Errorf("task %s: %w", t.ID, err)
 	}
 	t.Status = StatusDone
-	r.emit(Event{Kind: EventTaskDone, TaskID: t.ID, Score: t.Score, Text: t.Output})
+	r.emit(Event{Kind: EventTaskDone, TaskID: t.ID, Score: t.Score, Text: t.Output, Usage: r.taskUsage(t)})
 	return nil
 }
 
@@ -314,7 +360,11 @@ func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []Su
 			return fmt.Errorf("plan: %w", err)
 		case err == nil && !d.Atomic:
 			if plans := r.buildPlans(t, d.Plans); len(plans) > 0 {
-				r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: strconv.Itoa(len(plans))})
+				proposals := make([]PlanProposal, len(plans))
+				for i, p := range plans {
+					proposals[i] = proposalOf(p)
+				}
+				r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: strconv.Itoa(len(plans)), Plans: proposals})
 				return r.explore(ctx, t, b, plans)
 			}
 		}
