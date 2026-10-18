@@ -7,6 +7,9 @@
 // journal:
 //
 //	go run ./examples/research -o report.md -journal run.jsonl -resume
+//
+// -provider selects Claude (anthropic, the default), OpenAI (openai) or a
+// local Ollama server (ollama, without web search).
 package main
 
 import (
@@ -19,8 +22,11 @@ import (
 	"os/signal"
 	"strings"
 
+	openaiopt "github.com/openai/openai-go/v3/option"
+
 	"github.com/skrtk98/ethan"
 	"github.com/skrtk98/ethan/anthropic"
+	"github.com/skrtk98/ethan/openai"
 )
 
 func main() {
@@ -29,7 +35,9 @@ func main() {
 		tracePath   = flag.String("trace", "", "write the JSON trace to this file")
 		journalPath = flag.String("journal", "", "record the run's events to this file so that it can be resumed")
 		resume      = flag.Bool("resume", false, "resume the run recorded in -journal instead of starting one")
-		model       = flag.String("model", anthropic.DefaultModel, "Claude model id")
+		provider    = flag.String("provider", "anthropic", "model provider: anthropic, openai or ollama")
+		model       = flag.String("model", "", "model id (default: the provider's; gpt-oss:20b for ollama)")
+		baseURL     = flag.String("base-url", "http://localhost:11434/v1/", "server URL for -provider ollama")
 		effort      = flag.String("effort", "", "effort level: low, medium, high, xhigh or max")
 		maxDepth    = flag.Int("max-depth", 2, "depth at which tasks are no longer decomposed")
 		maxTasks    = flag.Int("max-tasks", 15, "tasks the run may start, leaves included")
@@ -55,12 +63,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	common := []anthropic.Option{anthropic.WithModel(*model)}
-	if *effort != "" {
-		common = append(common, anthropic.WithEffort(*effort))
+	control, searcher, err := models(*provider, *model, *effort, *baseURL, *searches)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
 	}
-	control := anthropic.New(common...)
-	searcher := anthropic.New(append(common, anthropic.WithWebSearch(*searches))...)
 
 	opts := []ethan.Option{
 		ethan.WithAgents(
@@ -118,10 +125,7 @@ func main() {
 	}
 
 	engine := ethan.New(control, opts...)
-	var (
-		res *ethan.Result
-		err error
-	)
+	var res *ethan.Result
 	if *resume {
 		res, err = engine.Resume(ctx, events, runOpts...)
 	} else {
@@ -153,6 +157,45 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// models returns the model for planning, evaluation and analysis, and the
+// one the researcher searches the web with.
+func models(provider, id, effort, baseURL string, searches int) (control, searcher ethan.Model, err error) {
+	switch provider {
+	case "anthropic":
+		opts := []anthropic.Option{}
+		if id != "" {
+			opts = append(opts, anthropic.WithModel(id))
+		}
+		if effort != "" {
+			opts = append(opts, anthropic.WithEffort(effort))
+		}
+		return anthropic.New(opts...), anthropic.New(append(opts, anthropic.WithWebSearch(searches))...), nil
+	case "openai":
+		opts := []openai.Option{}
+		if id != "" {
+			opts = append(opts, openai.WithModel(id))
+		}
+		if effort != "" {
+			opts = append(opts, openai.WithEffort(effort))
+		}
+		return openai.New(opts...), openai.New(append(opts, openai.WithWebSearch(searches))...), nil
+	case "ollama":
+		if id == "" {
+			id = "gpt-oss:20b"
+		}
+		// Ollama ignores the key; do not send it the OpenAI one.
+		opts := []openai.Option{openai.WithBaseURL(baseURL), openai.WithModel(id),
+			openai.WithClientOptions(openaiopt.WithAPIKey("ollama"))}
+		if effort != "" {
+			opts = append(opts, openai.WithEffort(effort))
+		}
+		fmt.Fprintln(os.Stderr, "warning: ollama has no web search; the researcher answers from what the model knows")
+		m := openai.New(opts...)
+		return m, m, nil
+	}
+	return nil, nil, fmt.Errorf("unknown provider %q", provider)
 }
 
 func writeTrace(path string, res *ethan.Result) error {
