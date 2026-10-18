@@ -172,60 +172,18 @@ func TestRefusal(t *testing.T) {
 	}
 }
 
-func TestContinuationIsReservedAndRefusalKeepsUsage(t *testing.T) {
+func TestFailedContinuationKeepsUsage(t *testing.T) {
+	// The paused turn is resumed, and the resumed call fails.
 	f := &fakeAPI{responses: []string{
 		message("pause_turn", `{"type":"server_tool_use","id":"srv-1","name":"web_search","input":{"query":"q"}}`),
-		message("end_turn", `{"type":"text","text":"never sent"}`),
 	}}
-	var asked []int
 	resp, err := newModel(t, f).Generate(context.Background(), ethan.Request{
-		Messages:  []ethan.Message{ethan.UserText("search")},
-		MaxTokens: 100,
-		Reserve: func(tokens int) error {
-			asked = append(asked, tokens)
-			return ethan.ErrBudgetExhausted
-		},
+		Messages: []ethan.Message{ethan.UserText("search")}, MaxTokens: 100,
 	})
-	if !errors.Is(err, ethan.ErrBudgetExhausted) {
-		t.Fatalf("err = %v", err)
-	}
-	if len(asked) != 1 || asked[0] != 108 {
-		t.Errorf("reserved %v, want [108] (max tokens + usage so far)", asked)
-	}
-	if len(f.bodies) != 1 {
-		t.Errorf("made %d API calls after the reservation failed", len(f.bodies))
+	if err == nil {
+		t.Fatal("the failed continuation returned no error")
 	}
 	if resp == nil || resp.Usage.Total() != 8 {
 		t.Errorf("usage of the first call was lost: %+v", resp)
-	}
-}
-
-func TestWebSearchReservesItsResults(t *testing.T) {
-	f := &fakeAPI{responses: []string{
-		message("end_turn", `{"type":"text","text":"found"}`),
-		message("end_turn", `{"type":"text","text":"{}"}`),
-	}}
-	m := newModel(t, f, anthropic.WithWebSearch(3))
-	var asked []int
-	reserve := func(tokens int) error { asked = append(asked, tokens); return nil }
-
-	if _, err := m.Generate(context.Background(), ethan.Request{
-		Messages: []ethan.Message{ethan.UserText("search")}, MaxTokens: 100, Reserve: reserve,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if len(asked) != 1 || asked[0] != 60_000 {
-		t.Errorf("reserved %v, want [60000] for 3 searches", asked)
-	}
-
-	asked = nil
-	if _, err := m.Generate(context.Background(), ethan.Request{
-		Messages: []ethan.Message{ethan.UserText("judge")}, MaxTokens: 100, Reserve: reserve,
-		Output: &ethan.OutputSchema{Name: "o", Schema: json.RawMessage(`{"type":"object"}`)},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if len(asked) != 0 {
-		t.Errorf("structured-output call without search reserved %v", asked)
 	}
 }

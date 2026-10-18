@@ -8,7 +8,7 @@ Given a goal, ethan grows an AND-OR task tree at runtime:
 - A **plan** (AND node) splits the task into subtasks with dependencies. Independent subtasks run in parallel. When all of them finish, their results are synthesized into the task's result.
 - A **strategy** decides which plans to try. The default beam strategy scores the candidates, executes the best ones in parallel, adopts the best-scoring result and backtracks to the remaining plans on failure.
 - **Agents** with their own instructions, models and tools execute the leaves, and share findings through a per-run **blackboard**.
-- A **budget** bounds depth, the number of tasks, tokens and concurrent model calls. Model calls reserve their estimated tokens before they start. When the budget runs out, the run stops starting new work and returns a **partial** result built from what finished, naming what is missing.
+- **Limits** bound depth, the number of tasks, tokens and concurrent model calls. They are checked mechanically: going beyond the task or token limit cancels the whole run with an error wrapping `ErrLimitExceeded`. How to spend a budget is left to the caller.
 - Every step is reported as an **event** and recorded in a JSON **trace**.
 
 > Status: experimental. The API may change.
@@ -38,7 +38,7 @@ import (
 func main() {
 	model := anthropic.New() // reads ANTHROPIC_API_KEY
 	engine := ethan.New(model,
-		ethan.WithBudget(ethan.Budget{MaxDepth: 2, MaxTokens: 500_000}),
+		ethan.WithLimits(ethan.Limits{MaxDepth: 2, MaxTokens: 500_000}),
 	)
 	res, err := engine.Run(context.Background(), "Compare the trade-offs of three approaches to rate limiting in Go services.")
 	if err != nil {
@@ -57,7 +57,7 @@ export ANTHROPIC_API_KEY=...
 go run ./examples/research -o report.md -trace trace.json "What changed in Go's generics between 1.18 and 1.26?"
 ```
 
-Progress is printed to stderr. `trace.json` contains the whole explored tree, including the rejected plans, scores, notes, events and token usage. Run `go run ./examples/research -h` for the budget and model flags.
+Progress is printed to stderr. `trace.json` contains the whole explored tree, including the rejected plans, scores, notes, events and token usage. Run `go run ./examples/research -h` for the limit and model flags.
 
 ## Customizing
 

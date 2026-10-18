@@ -7,14 +7,9 @@ const (
 	StatusPending Status = "pending"
 	StatusRunning Status = "running"
 	StatusDone    Status = "done"
-	// StatusPartial means the budget ran out before every subtask finished;
-	// the output is assembled from those that did and names the rest.
-	StatusPartial Status = "partial"
 	StatusFailed  Status = "failed"
 	StatusPruned  Status = "pruned"
 )
-
-func (s Status) usable() bool { return s == StatusDone || s == StatusPartial }
 
 // Task is an OR node of the exploration tree: it is solved either directly
 // by an agent or by exactly one of its candidate Plans.
@@ -47,10 +42,6 @@ type Plan struct {
 	ResultScore *Score  `json:"result_score,omitempty"`
 	Output      string  `json:"output,omitempty"`
 	Error       string  `json:"error,omitempty"`
-
-	// joined holds the subtask results when the budget ran out before they
-	// were synthesized and Output only joins them.
-	joined []SubtaskResult
 }
 
 // Score is an evaluation in [0, 1] with its justification.

@@ -1,7 +1,6 @@
 package ethan
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,9 +22,8 @@ type Engine struct {
 	evaluator       Evaluator
 	synthesizer     Synthesizer
 	strategy        Strategy
-	budget          Budget
+	limits          Limits
 	executeTemplate *template.Template
-	estimate        func(Request) int
 	observers       []Observer
 	notesInPrompt   int
 	maxPlans        int
@@ -61,21 +59,14 @@ func WithStrategy(s Strategy) Option {
 	return func(e *Engine) { e.strategy = s }
 }
 
-// WithBudget bounds each Run.
-func WithBudget(b Budget) Option {
-	return func(e *Engine) { e.budget = b }
+// WithLimits bounds each Run.
+func WithLimits(l Limits) Option {
+	return func(e *Engine) { e.limits = l }
 }
 
 // WithExecuteTemplate replaces the agents' default prompt template.
 func WithExecuteTemplate(t *template.Template) Option {
 	return func(e *Engine) { e.executeTemplate = t }
-}
-
-// WithTokenEstimator replaces the estimate a model call reserves against
-// Budget.MaxTokens before it starts. The estimate should be an upper bound
-// of the call's input plus output tokens.
-func WithTokenEstimator(f func(Request) int) Option {
-	return func(e *Engine) { e.estimate = f }
 }
 
 // WithObserver adds an observer that receives the events of every Run.
@@ -103,7 +94,7 @@ func WithMaxOutputTokens(n int) Option {
 // New returns an Engine whose components default to LLM-backed
 // implementations using m.
 func New(m Model, opts ...Option) *Engine {
-	e := &Engine{model: m, maxPlans: 3, notesInPrompt: 20, strategy: BeamStrategy{}, estimate: estimateTokens}
+	e := &Engine{model: m, maxPlans: 3, notesInPrompt: 20, strategy: BeamStrategy{}}
 	for _, o := range opts {
 		o(e)
 	}
@@ -113,7 +104,7 @@ func New(m Model, opts ...Option) *Engine {
 	if e.executeTemplate == nil {
 		e.executeTemplate = DefaultTemplate("execute")
 	}
-	e.budget = e.budget.withDefaults()
+	e.limits = e.limits.withDefaults()
 	return e
 }
 
@@ -124,18 +115,11 @@ type Result struct {
 	// Score is the evaluation of the root output, if it was evaluated.
 	Score *Score `json:"score,omitempty"`
 	// Error is the Run's error message, if it failed.
-	Error string `json:"error,omitempty"`
-	Root  *Task  `json:"root"`
-	Usage Usage  `json:"usage"`
-	// Exhausted reports whether the budget ran out during the Run: a model
-	// call or a task was refused, or the tokens spent reached
-	// Budget.MaxTokens.
-	Exhausted bool `json:"exhausted"`
-	// Partial reports whether Output is incomplete because the budget ran
-	// out before every subtask finished. Output then names what is missing.
-	Partial bool    `json:"partial"`
-	Notes   []Note  `json:"notes"`
-	Events  []Event `json:"events"`
+	Error  string  `json:"error,omitempty"`
+	Root   *Task   `json:"root"`
+	Usage  Usage   `json:"usage"`
+	Notes  []Note  `json:"notes"`
+	Events []Event `json:"events"`
 }
 
 // WriteTrace writes r as indented JSON.
@@ -146,10 +130,12 @@ func (r *Result) WriteTrace(w io.Writer) error {
 }
 
 // Run solves goal and returns the root task's output. On failure the
-// returned Result still holds the explored tree.
+// returned Result still holds the explored tree. When a limit is exceeded
+// the whole Run is canceled and the error wraps ErrLimitExceeded.
 func (e *Engine) Run(ctx context.Context, goal string) (*Result, error) {
-	r := &run{engine: e, goal: goal, sem: make(chan struct{}, e.budget.MaxConcurrency), board: &Blackboard{},
-		released: make(chan struct{})}
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	r := &run{engine: e, goal: goal, cancel: cancel, sem: make(chan struct{}, e.limits.MaxConcurrency), board: &Blackboard{}}
 	r.model = r.meter(e.model)
 	r.planner = e.planner
 	if r.planner == nil {
@@ -165,17 +151,19 @@ func (e *Engine) Run(ctx context.Context, goal string) (*Result, error) {
 	}
 
 	root := &Task{ID: "t0", Description: goal, Agent: e.agents[0].Name, Status: StatusPending}
-	err := r.takeNode()
+	err := r.takeTask()
 	if err == nil {
 		err = r.solve(ctx, root, nil, nil)
 	}
-	res := &Result{Goal: goal, Output: root.Output, Score: root.Score, Root: root, Notes: r.board.Notes(),
-		Partial: root.Status == StatusPartial}
+	if cause := context.Cause(ctx); err != nil && errors.Is(cause, ErrLimitExceeded) {
+		err = cause // rather than the cancellations it caused
+	}
+	res := &Result{Goal: goal, Output: root.Output, Score: root.Score, Root: root, Notes: r.board.Notes()}
 	if err != nil {
 		res.Error = err.Error()
 	}
 	r.mu.Lock()
-	res.Usage, res.Exhausted = r.spent, r.exhausted
+	res.Usage = r.spent
 	r.mu.Unlock()
 	r.emitMu.Lock()
 	res.Events = r.events
@@ -191,24 +179,19 @@ type run struct {
 	planner     Planner
 	evaluator   Evaluator
 	synthesizer Synthesizer
+	cancel      context.CancelCauseFunc
 	sem         chan struct{}
 	board       *Blackboard
 
 	emitMu sync.Mutex
 	events []Event
 
-	mu        sync.Mutex
-	spent     Usage
-	reserved  int
-	noReserve bool          // the root is executed directly; Budget.SynthesisReserve is released
-	waiters   int           // calls waiting in reserve
-	waiting   int           // tokens held by those calls
-	released  chan struct{} // closed and replaced whenever a reservation is released
-	exhausted bool
-	nodes     int
+	mu    sync.Mutex
+	spent Usage
+	tasks int
 }
 
-// meter wraps m so that its calls are bounded by the run's budget.
+// meter wraps m so that its calls count against the run's limits.
 func (r *run) meter(m Model) Model {
 	return meteredModel{run: r, model: m}
 }
@@ -226,82 +209,31 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	held := 0 // tokens this call has reserved; guarded by r.mu
-	if err := r.reserve(ctx, r.engine.estimate(req), &held); err != nil {
-		return nil, err
+	limit := r.engine.limits.MaxTokens
+	r.mu.Lock()
+	spent := r.spent.Total()
+	r.mu.Unlock()
+	if limit > 0 && spent >= limit {
+		return nil, r.exceed(ErrTokenLimit)
 	}
-	req.Reserve = func(tokens int) error { return r.reserve(ctx, tokens, &held) }
-
 	resp, err := mm.model.Generate(ctx, req)
-	var used Usage
 	if resp != nil {
-		used = resp.Usage
+		r.mu.Lock()
+		r.spent = r.spent.Add(resp.Usage)
+		spent = r.spent.Total()
+		r.mu.Unlock()
+		if limit > 0 && spent > limit {
+			// The response is paid for and still used; the rest of the run stops.
+			r.exceed(ErrTokenLimit)
+		}
 	}
-	r.settle(&held, used)
 	return resp, err
 }
 
-// reserve sets aside tokens for a model call, adding them to *held.
-//
-// When the tokens fit only once other calls release their reservations,
-// reserve waits for them: reservations are pessimistic, so running out of
-// room while other calls are in flight is no reason to stop the run. It
-// fails with ErrBudgetExhausted, and marks the run exhausted, when the
-// tokens would not fit even if every other reservation were released, or
-// when no running call could release anything, which happens when every
-// holder is itself waiting here for more.
-func (r *run) reserve(ctx context.Context, tokens int, held *int) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	limit := r.limit(ctx.Value(rootSynthesis{}) != nil)
-	for limit > 0 && r.spent.Total()+r.reserved+tokens > limit {
-		if r.spent.Total()+*held+tokens > limit || r.reserved-r.waiting-*held <= 0 {
-			r.exhausted = true
-			return ErrBudgetExhausted
-		}
-		released := r.released
-		r.waiters++
-		r.waiting += *held
-		r.mu.Unlock()
-		select {
-		case <-released:
-		case <-ctx.Done():
-		}
-		r.mu.Lock()
-		r.waiters--
-		r.waiting -= *held
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-	}
-	r.reserved += tokens
-	*held += tokens
-	return nil
-}
-
-// limit is the token budget open to a call, zero for unlimited; r.mu is
-// held. Only the root's synthesis may use Budget.SynthesisReserve, unless the
-// reserve was released.
-func (r *run) limit(synthesis bool) int {
-	general, all := r.engine.budget.limits()
-	if synthesis || r.noReserve {
-		return all
-	}
-	return general
-}
-
-// settle releases a call's reservation and records what it actually used.
-func (r *run) settle(held *int, used Usage) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.reserved -= *held
-	*held = 0
-	r.spent = r.spent.Add(used)
-	if limit := r.limit(false); limit > 0 && r.spent.Total() >= limit {
-		r.exhausted = true
-	}
-	close(r.released)
-	r.released = make(chan struct{})
+// exceed cancels the whole run because err, a limit, was exceeded.
+func (r *run) exceed(err error) error {
+	r.cancel(err)
+	return err
 }
 
 // emit records e and delivers it to the observers, one event at a time.
@@ -338,44 +270,22 @@ func (r *run) agentInfos() []AgentInfo {
 }
 
 func (r *run) planRequest(t *Task, b Brief) PlanRequest {
-	budget := r.engine.budget
-	req := PlanRequest{Brief: b, Agents: r.agentInfos(), MaxPlans: r.engine.maxPlans,
-		Depth: t.Depth, MaxDepth: budget.MaxDepth, RemainingTokens: -1}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	req.RemainingNodes = budget.MaxNodes - r.nodes
-	if limit := r.limit(false); limit > 0 {
-		req.RemainingTokens = max(limit-r.spent.Total()-r.reserved, 0)
-	}
-	return req
+	return PlanRequest{Brief: b, Agents: r.agentInfos(), MaxPlans: r.engine.maxPlans,
+		Depth: t.Depth, MaxDepth: r.engine.limits.MaxDepth}
 }
 
-// takeNode counts a task about to start against Budget.MaxNodes.
-func (r *run) takeNode() error {
+// takeTask counts a task about to start against Limits.MaxTasks.
+func (r *run) takeTask() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.nodes >= r.engine.budget.MaxNodes {
-		r.exhausted = true
-		return ErrNodeLimit
+	full := r.tasks >= r.engine.limits.MaxTasks
+	if !full {
+		r.tasks++
 	}
-	r.nodes++
+	r.mu.Unlock()
+	if full {
+		return r.exceed(ErrTaskLimit)
+	}
 	return nil
-}
-
-// stopped reports whether the budget has run out, after which no new work
-// is started.
-func (r *run) stopped() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.exhausted
-}
-
-// canDecompose reports whether t may be split further: it is above the
-// depth limit and at least two more tasks may start.
-func (r *run) canDecompose(t *Task) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return t.Depth < r.engine.budget.MaxDepth && r.engine.budget.MaxNodes-r.nodes >= 2 && !r.exhausted
 }
 
 // solve solves t, recording its outcome on t. path holds the ancestors'
@@ -390,10 +300,6 @@ func (r *run) solve(ctx context.Context, t *Task, path []string, inputs []Subtas
 		r.emit(Event{Kind: EventTaskFailed, TaskID: t.ID, Text: t.Error})
 		return fmt.Errorf("task %s: %w", t.ID, err)
 	}
-	if t.Status == StatusPartial {
-		r.emit(Event{Kind: EventTaskPartial, TaskID: t.ID, Score: t.Score, Text: t.Output})
-		return nil
-	}
 	t.Status = StatusDone
 	r.emit(Event{Kind: EventTaskDone, TaskID: t.ID, Score: t.Score, Text: t.Output})
 	return nil
@@ -401,10 +307,10 @@ func (r *run) solve(ctx context.Context, t *Task, path []string, inputs []Subtas
 
 func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []SubtaskResult) error {
 	b := Brief{Goal: r.goal, Path: path, Task: t.Description, Inputs: inputs, Notes: r.board.Recent(r.engine.notesInPrompt)}
-	if r.canDecompose(t) {
+	if t.Depth < r.engine.limits.MaxDepth {
 		d, err := r.planner.Plan(ctx, r.planRequest(t, b))
 		switch {
-		case errors.Is(err, ErrBudgetExhausted) || ctx.Err() != nil:
+		case ctx.Err() != nil:
 			return fmt.Errorf("plan: %w", err)
 		case err == nil && !d.Atomic:
 			if plans := r.buildPlans(t, d.Plans); len(plans) > 0 {
@@ -415,13 +321,6 @@ func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []Su
 		// A failed or unusable decision falls back to direct execution.
 	}
 	r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: "atomic"})
-	if t.Depth == 0 {
-		// No plan of the root will need the synthesis reserve.
-		r.mu.Lock()
-		r.noReserve = true
-		r.exhausted = r.spent.Total() >= r.limit(false)
-		r.mu.Unlock()
-	}
 	return r.executeLeaf(ctx, t, b)
 }
 
@@ -521,26 +420,10 @@ func (r *run) explore(ctx context.Context, t *Task, b Brief, plans []*Plan) erro
 	if err != nil {
 		return err
 	}
-	if p == nil || !p.Status.usable() {
+	if p == nil || p.Status != StatusDone {
 		return errors.New("strategy returned no successful plan")
 	}
-	if t.Depth == 0 && p.joined != nil {
-		// The budget ran out before this plan was synthesized; the reserve
-		// was kept for this one synthesis, of the plan that was chosen.
-		out, err := r.synthesizer.Synthesize(context.WithValue(ctx, rootSynthesis{}, true), b, p.joined)
-		switch {
-		case err == nil:
-			p.Output, p.joined = out, nil
-		case !errors.Is(err, ErrBudgetExhausted):
-			return fmt.Errorf("synthesize: %w", err)
-		case ctx.Err() != nil:
-			return ctx.Err()
-		}
-	}
 	t.Chosen, t.Output, t.Score = p.ID, p.Output, p.ResultScore
-	if p.Status == StatusPartial {
-		t.Status = StatusPartial
-	}
 	r.emit(Event{Kind: EventPlanChosen, TaskID: t.ID, PlanID: p.ID, Score: p.ResultScore})
 	return nil
 }
@@ -585,17 +468,11 @@ func (x *exploration) Prune(p *Plan) {
 func (x *exploration) Execute(ctx context.Context, p *Plan) error {
 	p.Status = StatusRunning
 	x.run.emit(Event{Kind: EventPlanStarted, TaskID: x.task.ID, PlanID: p.ID, Text: p.Rationale})
-	partial, err := x.run.executePlan(ctx, x.task, x.brief, p)
-	if err != nil {
+	if err := x.run.executePlan(ctx, x.task, x.brief, p); err != nil {
 		p.Status = StatusFailed
 		p.Error = err.Error()
 		x.run.emit(Event{Kind: EventPlanFailed, TaskID: x.task.ID, PlanID: p.ID, Text: p.Error})
 		return fmt.Errorf("plan %s: %w", p.ID, err)
-	}
-	if partial {
-		p.Status = StatusPartial
-		x.run.emit(Event{Kind: EventPlanPartial, TaskID: x.task.ID, PlanID: p.ID, Text: p.Output})
-		return nil
 	}
 	p.Status = StatusDone
 	x.run.emit(Event{Kind: EventPlanDone, TaskID: x.task.ID, PlanID: p.ID, Text: p.Output})
@@ -610,18 +487,10 @@ func proposalOf(p *Plan) PlanProposal {
 	return pp
 }
 
-// notCompleted stands in for the output of a subtask the budget did not
-// allow to finish.
-const notCompleted = "[NOT COMPLETED: the budget ran out before this subtask was done]"
-
 // executePlan solves p's subtasks, each as soon as its dependencies are
-// done, then synthesizes their outputs.
-//
-// A failure other than the budget running out cancels the remaining
-// subtasks and is returned. When the budget runs out, subtasks not yet
-// started are skipped, those in flight finish, and if any subtask
-// succeeded the plan's output is assembled from them and reported partial.
-func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *Plan) (partial bool, err error) {
+// done, then synthesizes their outputs. The first failure cancels the
+// remaining subtasks and is returned.
+func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *Plan) error {
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
@@ -633,10 +502,9 @@ func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *P
 	}
 	path := append(slices.Clone(b.Path), parent.Description)
 	var (
-		wg        sync.WaitGroup
-		mu        sync.Mutex
-		hardErr   error // first failure other than the budget; cancels the rest
-		budgetErr error // first budget refusal
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
 	)
 	for _, st := range p.Subtasks {
 		wg.Go(func() {
@@ -645,7 +513,7 @@ func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *P
 			for _, d := range st.DependsOn {
 				<-done[d] // every subtask closes its channel, even when skipped
 				dep := byID[d]
-				if !dep.Status.usable() {
+				if dep.Status != StatusDone {
 					st.Status = StatusPruned
 					return
 				}
@@ -655,68 +523,37 @@ func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *P
 				st.Status = StatusPruned
 				return
 			}
-			err := ErrBudgetExhausted
-			if !r.stopped() {
-				err = r.takeNode()
-			}
+			err := r.takeTask()
 			if err != nil {
 				st.Status, st.Error = StatusPruned, "not started: "+err.Error()
 			} else {
 				err = r.solve(ctx, st, path, inputs)
 			}
-			if err == nil {
-				return
-			}
-			mu.Lock()
-			defer mu.Unlock()
-			if errors.Is(err, ErrBudgetExhausted) {
-				budgetErr = cmp.Or(budgetErr, err)
-				return
-			}
-			if hardErr == nil {
-				hardErr = err
-				cancel()
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+					cancel()
+				}
+				mu.Unlock()
 			}
 		})
 	}
 	wg.Wait()
-	// A cancellation from the caller is a failure, never a partial result.
 	if err := parentCtx.Err(); err != nil {
-		return false, err
+		return err
 	}
-	if hardErr != nil {
-		return false, hardErr
+	if firstErr != nil {
+		return firstErr
 	}
-
 	results := make([]SubtaskResult, len(p.Subtasks))
-	finished := 0
 	for i, st := range p.Subtasks {
 		results[i] = SubtaskResult{Description: st.Description, Output: st.Output}
-		switch {
-		case st.Status == StatusDone:
-			finished++
-		case st.Status == StatusPartial:
-			finished++
-			partial = true
-		default:
-			results[i].Output = notCompleted
-			partial = true
-		}
-	}
-	if finished == 0 {
-		return false, cmp.Or(budgetErr, errors.New("no subtask finished"))
 	}
 	out, err := r.synthesizer.Synthesize(ctx, b, results)
-	switch {
-	case errors.Is(err, ErrBudgetExhausted):
-		out, p.joined = joinResults(results), results
-	case err != nil:
-		return false, fmt.Errorf("synthesize: %w", err)
+	if err != nil {
+		return fmt.Errorf("synthesize: %w", err)
 	}
 	p.Output = out
-	return partial, nil
+	return nil
 }
-
-// rootSynthesis marks the context of the chosen root plan's second
-// synthesis, which may use Budget.SynthesisReserve.
-type rootSynthesis struct{}

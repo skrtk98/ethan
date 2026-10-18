@@ -2,7 +2,6 @@
 package anthropic
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,15 +23,6 @@ var ErrRefused = errors.New("anthropic: request refused")
 
 // maxContinuations bounds how often a paused server-side tool loop is resumed.
 const maxContinuations = 5
-
-// Web search results enter the input on the server, out of the caller's
-// sight, so each call reserves this many tokens per allowed search. The
-// server rereads the growing context after every search: a call with five
-// searches was measured at about 90,000 input tokens.
-const (
-	searchTokensPerUse = 20_000
-	defaultSearchUses  = 5
-)
 
 // Model is an ethan.Model backed by the Claude Messages API.
 // It is safe for concurrent use.
@@ -91,19 +81,7 @@ func (m *Model) Generate(ctx context.Context, req ethan.Request) (*ethan.Respons
 		return nil, err
 	}
 	out := &ethan.Response{}
-	if m.searches(req) && req.Reserve != nil {
-		uses := cmp.Or(int(m.webSearchUses), defaultSearchUses)
-		if err := req.Reserve(uses * searchTokensPerUse); err != nil {
-			return out, err
-		}
-	}
-	for i := range maxContinuations {
-		// The resumed call resends everything so far, which the usage so far bounds.
-		if i > 0 && req.Reserve != nil {
-			if err := req.Reserve(int(params.MaxTokens) + out.Usage.Total()); err != nil {
-				return out, err
-			}
-		}
+	for range maxContinuations {
 		msg, err := m.client.Beta.Messages.New(ctx, params)
 		if err != nil {
 			return out, err

@@ -13,7 +13,7 @@ import (
 
 // TestLiveRun calls the real API. Run with: go test -tags live ./anthropic
 func TestLiveRun(t *testing.T) {
-	res, err := ethan.New(anthropic.New(), ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 100_000})).
+	res, err := ethan.New(anthropic.New(), ethan.WithLimits(ethan.Limits{MaxDepth: 1, MaxTokens: 100_000})).
 		Run(context.Background(), "What is 17 * 23? Answer with the number only.")
 	if err != nil {
 		t.Fatal(err)

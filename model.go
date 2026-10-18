@@ -36,13 +36,6 @@ type Request struct {
 	// Output, when set, asks the model for a JSON value matching the schema
 	// instead of free text. The value is returned in Response.Output.
 	Output *OutputSchema
-	// Reserve, when set, must be called by an adapter for tokens the caller
-	// cannot see in the request: each additional underlying API call (e.g.
-	// to resume a paused turn), and input the provider adds on its own (e.g.
-	// server-side tool results). The caller has already reserved an estimate
-	// of the request itself. If Reserve fails, the adapter must not make the
-	// call and must return the error.
-	Reserve func(tokens int) error
 }
 
 // OutputSchema describes a structured output.

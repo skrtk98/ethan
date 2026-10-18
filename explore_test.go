@@ -220,7 +220,7 @@ func TestMaxDepthStopsDecomposition(t *testing.T) {
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults)
 
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1})).Run(context.Background(), "goal")
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1})).Run(context.Background(), "goal")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,200 +232,101 @@ func TestMaxDepthStopsDecomposition(t *testing.T) {
 	}
 }
 
-// flatCost makes every call reserve exactly what the scripted model spends.
-var flatCost = ethan.WithTokenEstimator(func(ethan.Request) int { return ethantest.DefaultUsage.Total() })
-
-func TestTokenBudgetFallsBackToJoinedResults(t *testing.T) {
-	// Each call costs 20 tokens: plan(root), plan(A), plan(B), execute(A),
-	// execute(B) spend 100, so synthesis is refused.
-	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
-		On(ethan.TagExecute, echoTask).
-		On(ethan.TagSynthesize, joinResults)
-
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 100, SynthesisReserve: -1}), flatCost).Run(context.Background(), "goal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Exhausted {
-		t.Error("Exhausted = false")
-	}
-	if !strings.Contains(res.Output, "out(A)") || !strings.Contains(res.Output, "out(B)") {
-		t.Errorf("Output = %q", res.Output)
-	}
-	if len(m.Calls(ethan.TagSynthesize)) != 0 {
-		t.Error("synthesis was called despite the exhausted budget")
-	}
-}
-
-func TestRootSynthesisUsesTheReserve(t *testing.T) {
-	// Each call costs 20 and 20 of the 100 tokens are held back: the plan
-	// and three executions use the other 80, D is refused, and the root's
-	// synthesis still runs on the reserve.
+func TestTaskLimitCancelsTheRun(t *testing.T) {
+	// The root and two subtasks use up MaxTasks; starting a third cancels
+	// the whole run.
 	m := ethantest.New().
 		On(ethan.TagPlan, decomposeRoot(plan("p",
 			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"},
-			sub{ID: "c", Description: "C", DependsOn: []string{"a", "b"}},
-			sub{ID: "d", Description: "D", DependsOn: []string{"c"}},
+			sub{ID: "c", Description: "C"}, sub{ID: "d", Description: "D"},
 		))).
 		On(ethan.TagExecute, echoTask).
-		On(ethan.TagSynthesize, ethantest.ReplyText("synthesized"))
+		On(ethan.TagSynthesize, joinResults)
 
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 100, SynthesisReserve: 0.2}), flatCost).
-		Run(context.Background(), "goal")
-	if err != nil {
-		t.Fatal(err)
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1, MaxTasks: 3})).Run(context.Background(), "goal")
+	if !errors.Is(err, ethan.ErrTaskLimit) || !errors.Is(err, ethan.ErrLimitExceeded) {
+		t.Fatalf("err = %v, want ErrTaskLimit", err)
 	}
-	if !res.Exhausted || !res.Partial {
-		t.Errorf("Exhausted = %v, Partial = %v; want both", res.Exhausted, res.Partial)
+	if n := len(m.Calls(ethan.TagExecute)); n > 2 {
+		t.Errorf("executed %d subtasks, want at most 2", n)
 	}
-	if res.Output != "synthesized" {
-		t.Errorf("Output = %q, want the synthesis", res.Output)
-	}
-	if res.Usage.Total() > 100 {
-		t.Errorf("spent %d tokens, budget 100", res.Usage.Total())
+	if res.Root.Status != ethan.StatusFailed || res.Error == "" {
+		t.Errorf("root = %s, Error = %q", res.Root.Status, res.Error)
 	}
 }
 
-func TestAtomicRootReleasesTheReserve(t *testing.T) {
-	// 25 of the 45 tokens are held back. The plan (20) uses up the general
-	// 20; the execution (20) fits only once the root, executed directly,
-	// releases the reserve, and the run then ends within its budget.
+func TestTokenLimitStopsCallsOnceReached(t *testing.T) {
+	// The plan spends 20, which reaches the limit: execution never starts.
 	m := ethantest.New().On(ethan.TagPlan, atomicPlan()).On(ethan.TagExecute, echoTask)
 
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 45, SynthesisReserve: 25.0 / 45}), flatCost).
-		Run(context.Background(), "goal")
-	if err != nil {
-		t.Fatal(err)
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxTokens: 20})).Run(context.Background(), "goal")
+	if !errors.Is(err, ethan.ErrTokenLimit) {
+		t.Fatalf("err = %v, want ErrTokenLimit", err)
 	}
-	if res.Exhausted {
-		t.Error("Exhausted = true")
+	if len(m.Calls(ethan.TagExecute)) != 0 || res.Usage.Total() != 20 {
+		t.Errorf("executed %d times, spent %d", len(m.Calls(ethan.TagExecute)), res.Usage.Total())
 	}
 }
 
-func TestReserveSynthesizesTheChosenRootPlan(t *testing.T) {
-	// Two root plans run out of budget before their synthesis. P2 finished
-	// all of its subtasks, so it is chosen and synthesized on the reserve,
-	// which has room for one synthesis only.
-	cDone := make(chan struct{})
-	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(
-			plan("p1", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}}),
-			plan("p2", sub{ID: "c", Description: "C"}),
-		)).
+// blockingModel makes the execution of one task wait until its context is
+// canceled, closing started when it begins.
+type blockingModel struct {
+	*ethantest.Model
+	task    string
+	started chan struct{}
+}
+
+func (m blockingModel) Generate(ctx context.Context, req ethan.Request) (*ethan.Response, error) {
+	if req.Tag == ethan.TagExecute && taskOf(req) == m.task {
+		close(m.started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return m.Model.Generate(ctx, req)
+}
+
+func TestCallPastTheTokenLimitCancelsCallsInFlight(t *testing.T) {
+	// After the plan (20 of 30), A and B start. A's 20 tokens carry the total
+	// past the limit while B is still running; B must be canceled.
+	started := make(chan struct{})
+	m := blockingModel{task: "B", started: started, Model: ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
 		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
-			if taskOf(req) == "A" {
-				<-cDone // B, which needs A, starts only after C has spent its tokens
-			}
+			<-started
 			return echoTask(req)
-		}).
-		On(ethan.TagSynthesize, joinResults)
-	done := ethan.WithObserver(ethan.ObserverFunc(func(e ethan.Event) {
-		if e.Kind == ethan.EventTaskDone && e.TaskID == "t0.p2.t1" {
-			close(cDone)
-		}
-	}))
-	// plan(root) 20, execute A and C 40: the general 60 is used up and B is
-	// refused; the reserve of 25 fits one synthesis.
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 85, SynthesisReserve: 25.0 / 85}),
-		ethan.WithStrategy(ethan.BeamStrategy{Width: 2}), flatCost, done).Run(context.Background(), "goal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Root.Chosen != "t0.p2" || res.Output != "out(C)" {
-		t.Errorf("chose %s with output %q; want t0.p2 synthesized to out(C)", res.Root.Chosen, res.Output)
-	}
-	if n := len(m.Calls(ethan.TagSynthesize)); n != 1 {
-		t.Errorf("%d syntheses, want the chosen plan's only", n)
-	}
-}
+		})}
 
-func TestFailedReserveSynthesisIsAnError(t *testing.T) {
-	// The root's synthesis is refused for budget and its retry on the
-	// reserve fails for another reason, which must not pass as success.
-	var calls atomic.Int32
-	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
-		On(ethan.TagExecute, echoTask).
-		On(ethan.TagSynthesize, func(ethan.Request) (*ethan.Response, error) {
-			calls.Add(1)
-			return nil, errors.New("model down")
-		})
-
-	_, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 80, SynthesisReserve: 0.25}), flatCost).
-		Run(context.Background(), "goal")
-	if err == nil || !strings.Contains(err.Error(), "model down") || calls.Load() != 1 {
-		t.Errorf("err = %v after %d syntheses; want the retry's failure", err, calls.Load())
-	}
-}
-
-// refusingSynthesizer is refused for budget on every call.
-type refusingSynthesizer struct{ calls atomic.Int32 }
-
-func (s *refusingSynthesizer) Synthesize(context.Context, ethan.Brief, []ethan.SubtaskResult) (string, error) {
-	s.calls.Add(1)
-	return "", ethan.ErrBudgetExhausted
-}
-
-func TestCancellationBeforeReserveSynthesisIsAFailure(t *testing.T) {
-	// The caller cancels once the root's plan is done but only joined; the
-	// retry on the reserve is refused for budget, which must not hide the
-	// cancellation.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
-		On(ethan.TagExecute, echoTask)
-	syn := &refusingSynthesizer{}
-	cancelOnDone := ethan.WithObserver(ethan.ObserverFunc(func(e ethan.Event) {
-		if e.Kind == ethan.EventPlanDone && e.PlanID == "t0.p1" {
-			cancel()
-		}
-	}))
-
-	_, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1}), ethan.WithSynthesizer(syn), cancelOnDone).Run(ctx, "goal")
-	if !errors.Is(err, context.Canceled) || syn.calls.Load() != 2 {
-		t.Errorf("err = %v after %d syntheses, want context.Canceled after the retry", err, syn.calls.Load())
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1, MaxTokens: 30})).Run(ctx, "goal")
+	if ctx.Err() != nil {
+		t.Fatal("B was not canceled")
+	}
+	if !errors.Is(err, ethan.ErrTokenLimit) {
+		t.Fatalf("err = %v, want ErrTokenLimit", err)
+	}
+	if a, b := res.Root.Plans[0].Subtasks[0], res.Root.Plans[0].Subtasks[1]; a.Status != ethan.StatusDone || b.Status != ethan.StatusFailed {
+		t.Errorf("A %s, B %s; want A done (its tokens are spent) and B failed", a.Status, b.Status)
 	}
 }
 
-func TestSynthesisBelowTheRootLeavesTheReserveAlone(t *testing.T) {
-	// X is decomposed into Y and Z. The plan calls for the root and X and
-	// the executions of Y and Z use the 80 general tokens, so X's synthesis
-	// is refused and joins; the reserve is left for the root's synthesis.
+func TestExceededLimitStopsBacktracking(t *testing.T) {
+	// One plan at a time: the plan and two plan scores spend 60 of 70, and
+	// executing the first plan carries the total past the limit. The second
+	// plan must not be tried.
 	m := ethantest.New().
-		On(ethan.TagPlan, func(req ethan.Request) (*ethan.Response, error) {
-			switch taskOf(req) {
-			case "goal":
-				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("root", sub{ID: "x", Description: "X"})}}), nil
-			case "X":
-				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("x",
-					sub{ID: "y", Description: "Y"}, sub{ID: "z", Description: "Z"})}}), nil
-			}
-			return ethantest.JSON(ethan.Decision{Atomic: true}), nil
-		}).
+		On(ethan.TagPlan, decomposeRoot(plan("p1", sub{ID: "a", Description: "A"}), plan("p2", sub{ID: "b", Description: "B"}))).
+		On(ethan.TagScorePlan, ethantest.ReplyJSON(ethan.Score{Value: 0.5})).
 		On(ethan.TagExecute, echoTask).
-		On(ethan.TagSynthesize, ethantest.ReplyText("synthesized"))
+		On(ethan.TagSynthesize, joinResults)
 
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 100, SynthesisReserve: 0.2}), flatCost).
-		Run(context.Background(), "goal")
-	if err != nil {
-		t.Fatal(err)
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1, MaxTokens: 70}),
+		ethan.WithStrategy(ethan.BeamStrategy{Width: 1})).Run(context.Background(), "goal")
+	if !errors.Is(err, ethan.ErrTokenLimit) {
+		t.Fatalf("err = %v, want ErrTokenLimit", err)
 	}
-	if n := len(m.Calls(ethan.TagSynthesize)); n != 1 || res.Output != "synthesized" {
-		t.Errorf("%d syntheses, Output = %q; want only the root's", n, res.Output)
-	}
-	if x := res.Root.Plans[0].Subtasks[0]; !strings.Contains(x.Output, "out(Y)") {
-		t.Errorf("X's output = %q, want Y and Z joined", x.Output)
-	}
-}
-
-func TestTokenBudgetExhaustedBeforeAnyResultFails(t *testing.T) {
-	m := ethantest.New().On(ethan.TagPlan, threePlans()).On(ethan.TagExecute, echoTask)
-
-	_, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 20}), flatCost).Run(context.Background(), "goal")
-	if !errors.Is(err, ethan.ErrBudgetExhausted) {
-		t.Fatalf("err = %v, want ErrBudgetExhausted", err)
+	if n := len(m.Calls(ethan.TagExecute)); n != 1 || res.Root.Plans[1].Status != ethan.StatusPruned {
+		t.Errorf("executed %d subtasks, second plan %s; want 1 and pruned", n, res.Root.Plans[1].Status)
 	}
 }
 
@@ -447,91 +348,11 @@ func TestMaxConcurrencyLimitsModelCalls(t *testing.T) {
 		}).
 		On(ethan.TagSynthesize, joinResults)
 
-	if _, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxConcurrency: 1})).Run(context.Background(), "goal"); err != nil {
+	if _, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxConcurrency: 1})).Run(context.Background(), "goal"); err != nil {
 		t.Fatal(err)
 	}
 	if peak.Load() != 1 {
 		t.Errorf("peak concurrency = %d, want 1", peak.Load())
-	}
-}
-
-func TestConcurrentCallsCannotOverspend(t *testing.T) {
-	// The root plan costs 20; four parallel executions of 20 each would
-	// overshoot 80, so the reservation must refuse one of them up front.
-	release := make(chan struct{})
-	var started atomic.Int32
-	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p",
-			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"},
-			sub{ID: "c", Description: "C"}, sub{ID: "d", Description: "D"},
-		))).
-		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
-			if started.Add(1) == 3 {
-				close(release)
-			}
-			<-release
-			return echoTask(req)
-		}).
-		On(ethan.TagSynthesize, joinResults)
-
-	res, _ := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 80, SynthesisReserve: -1}), flatCost).Run(context.Background(), "goal")
-	if res.Usage.Total() > 80 {
-		t.Errorf("spent %d tokens, budget 80", res.Usage.Total())
-	}
-	if !res.Exhausted {
-		t.Error("Exhausted = false")
-	}
-}
-
-func TestReservationsWaitingOnEachOtherDoNotDeadlock(t *testing.T) {
-	// Two executions each hold 30 and then ask for 30 more, which fits only
-	// once the other releases. One must give up so the other can finish.
-	var ready sync.WaitGroup
-	ready.Add(2)
-	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
-		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
-			ready.Done()
-			ready.Wait()
-			if err := req.Reserve(30); err != nil {
-				return &ethan.Response{Usage: ethantest.DefaultUsage}, err
-			}
-			return echoTask(req)
-		}).
-		On(ethan.TagSynthesize, joinResults)
-	est := ethan.WithTokenEstimator(func(ethan.Request) int { return 30 })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 100, SynthesisReserve: -1}), est).Run(ctx, "goal")
-	if ctx.Err() != nil {
-		t.Fatal("deadlocked")
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := 0
-	for _, st := range res.Root.Plans[0].Subtasks {
-		if st.Status == ethan.StatusDone {
-			done++
-		}
-	}
-	if done != 1 || !res.Partial || !res.Exhausted {
-		t.Errorf("done = %d, Partial = %v, Exhausted = %v; want one finished subtask and the refusal recorded",
-			done, res.Partial, res.Exhausted)
-	}
-}
-
-func TestExhaustedWhenLastCallReachesTheLimit(t *testing.T) {
-	m := ethantest.New().On(ethan.TagPlan, atomicPlan()).On(ethan.TagExecute, ethantest.ReplyText("x"))
-	small := ethan.WithTokenEstimator(func(ethan.Request) int { return 1 })
-
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 40}), small).Run(context.Background(), "goal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Exhausted {
-		t.Error("spending exactly the budget did not set Exhausted")
 	}
 }
 
@@ -545,142 +366,6 @@ func TestUsageOfFailedCallsIsCounted(t *testing.T) {
 	res, _ := ethan.New(m).Run(context.Background(), "goal")
 	if res.Usage.InputTokens < 500 {
 		t.Errorf("Usage = %+v, want the failed call's 500 input tokens", res.Usage)
-	}
-}
-
-func TestAdapterContinuationsAreReserved(t *testing.T) {
-	var reserveErr error
-	m := ethantest.New().
-		On(ethan.TagPlan, atomicPlan()).
-		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
-			// An adapter resuming a paused turn asks for more budget first.
-			reserveErr = req.Reserve(1000)
-			if reserveErr != nil {
-				return &ethan.Response{Usage: ethantest.DefaultUsage}, reserveErr
-			}
-			return ethantest.Text("x"), nil
-		})
-
-	_, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxTokens: 500}), flatCost).Run(context.Background(), "goal")
-	if !errors.Is(reserveErr, ethan.ErrBudgetExhausted) || !errors.Is(err, ethan.ErrBudgetExhausted) {
-		t.Errorf("reserve err = %v, run err = %v", reserveErr, err)
-	}
-}
-
-func TestBudgetExhaustionKeepsCompletedSubtasks(t *testing.T) {
-	// C never fits in the budget. It is refused while A is running; A must
-	// not be canceled, and the plan becomes partial and names C as missing.
-	aRunning, cRefused := make(chan struct{}), make(chan struct{})
-	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p",
-			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"},
-			sub{ID: "c", Description: "C", DependsOn: []string{"b"}},
-		))).
-		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
-			if taskOf(req) == "A" {
-				close(aRunning)
-				<-cRefused
-			}
-			return echoTask(req)
-		}).
-		On(ethan.TagSynthesize, func(req ethan.Request) (*ethan.Response, error) {
-			return ethantest.Text(ethantest.Prompt(req)), nil
-		})
-	costs := ethan.WithTokenEstimator(func(req ethan.Request) int {
-		if taskOf(req) == "C" {
-			<-aRunning
-			return 1000
-		}
-		return ethantest.DefaultUsage.Total()
-	})
-	refusal := ethan.WithObserver(ethan.ObserverFunc(func(e ethan.Event) {
-		if e.Kind == ethan.EventTaskFailed && e.TaskID == "t0.p1.t3" {
-			close(cRefused)
-		}
-	}))
-
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxTokens: 100}), costs, refusal).Run(context.Background(), "goal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Partial || !res.Exhausted || res.Root.Status != ethan.StatusPartial {
-		t.Errorf("Partial=%v Exhausted=%v root=%s", res.Partial, res.Exhausted, res.Root.Status)
-	}
-	for _, want := range []string{"out(A)", "out(B)", "NOT COMPLETED"} {
-		if !strings.Contains(res.Output, want) {
-			t.Errorf("Output lacks %q:\n%s", want, res.Output)
-		}
-	}
-	if st := res.Root.Plans[0].Subtasks[0]; st.Status != ethan.StatusDone {
-		t.Errorf("in-flight sibling A ended %s", st.Status)
-	}
-}
-
-func TestPartialResultsPropagateThroughLevels(t *testing.T) {
-	// The root's single subtask X is decomposed into Y and then Z; Z never fits.
-	m := ethantest.New().
-		On(ethan.TagPlan, func(req ethan.Request) (*ethan.Response, error) {
-			switch taskOf(req) {
-			case "goal":
-				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("p", sub{ID: "x", Description: "X"})}}), nil
-			case "X":
-				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("q", sub{ID: "y", Description: "Y"}, sub{ID: "z", Description: "Z", DependsOn: []string{"y"}})}}), nil
-			}
-			return ethantest.JSON(ethan.Decision{Atomic: true}), nil
-		}).
-		On(ethan.TagExecute, echoTask).
-		On(ethan.TagSynthesize, joinResults)
-	costs := ethan.WithTokenEstimator(func(req ethan.Request) int {
-		if taskOf(req) == "Z" {
-			return 1000
-		}
-		return ethantest.DefaultUsage.Total()
-	})
-
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 2, MaxTokens: 200}), costs).Run(context.Background(), "goal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Partial || !strings.Contains(res.Output, "out(Y)") {
-		t.Errorf("Partial=%v Output=%q", res.Partial, res.Output)
-	}
-	if x := res.Root.Plans[0].Subtasks[0]; x.Status != ethan.StatusPartial {
-		t.Errorf("X status = %s", x.Status)
-	}
-}
-
-func TestNodeLimitIsHard(t *testing.T) {
-	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p",
-			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"},
-			sub{ID: "c", Description: "C"}, sub{ID: "d", Description: "D"},
-		))).
-		On(ethan.TagExecute, echoTask).
-		On(ethan.TagSynthesize, joinResults)
-
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 1, MaxNodes: 3})).Run(context.Background(), "goal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := len(m.Calls(ethan.TagExecute)); n != 2 {
-		t.Errorf("executed %d subtasks, want 2 (root + 2 = 3 nodes)", n)
-	}
-	if !res.Partial || !res.Exhausted {
-		t.Errorf("Partial=%v Exhausted=%v", res.Partial, res.Exhausted)
-	}
-}
-
-func TestDecompositionNeedsRoomForTwoNodes(t *testing.T) {
-	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
-		On(ethan.TagExecute, echoTask)
-
-	res, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxNodes: 2})).Run(context.Background(), "goal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Root.Atomic || len(m.Calls(ethan.TagPlan)) != 0 {
-		t.Errorf("root decomposed with room for only one more task")
 	}
 }
 
@@ -714,24 +399,18 @@ func TestBeamRunsOnePlanAtATimeBelowRoot(t *testing.T) {
 	}
 }
 
-func TestPlannerSeesDepthAndBudget(t *testing.T) {
+func TestPlannerSeesItsDepth(t *testing.T) {
 	m := ethantest.New().On(ethan.TagPlan, atomicPlan()).On(ethan.TagExecute, echoTask)
 
-	_, err := ethan.New(m, ethan.WithBudget(ethan.Budget{MaxDepth: 3, MaxNodes: 9, MaxTokens: 1000}), flatCost).
-		Run(context.Background(), "goal")
-	if err != nil {
+	if _, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 3})).Run(context.Background(), "goal"); err != nil {
 		t.Fatal(err)
 	}
-	p := ethantest.Prompt(m.Calls(ethan.TagPlan)[0])
-	// The planner sees the tokens left outside the 15% held back for synthesis.
-	for _, want := range []string{"Depth: 0 (tasks at depth 3", "Tasks that may still start: 8", "Tokens left: about 850"} {
-		if !strings.Contains(p, want) {
-			t.Errorf("planner prompt lacks %q:\n%s", want, p)
-		}
+	if p := ethantest.Prompt(m.Calls(ethan.TagPlan)[0]); !strings.Contains(p, "<depth>0 (tasks at depth 3") {
+		t.Errorf("planner prompt lacks the depth:\n%s", p)
 	}
 }
 
-func TestCancellationIsNeverAPartialSuccess(t *testing.T) {
+func TestCancellationFailsTheRun(t *testing.T) {
 	// A finishes, then the caller cancels before B (which needs A) starts.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -749,7 +428,7 @@ func TestCancellationIsNeverAPartialSuccess(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	if res.Partial || res.Root.Status != ethan.StatusFailed {
-		t.Errorf("Partial=%v root=%s", res.Partial, res.Root.Status)
+	if res.Root.Status != ethan.StatusFailed {
+		t.Errorf("root = %s", res.Root.Status)
 	}
 }

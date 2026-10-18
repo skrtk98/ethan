@@ -26,8 +26,7 @@ type Exploration interface {
 	// It returns nil if the evaluation failed.
 	ScorePlan(ctx context.Context, p *Plan) *Score
 	// Execute solves p's subtasks and synthesizes their results into
-	// p.Output. It returns nil when p produced an output, which is partial
-	// (p.Status == StatusPartial) if the budget ran out midway.
+	// p.Output. It returns nil when p produced an output.
 	Execute(ctx context.Context, p *Plan) error
 	// ScoreResult evaluates p's output and records it on p.
 	// It returns nil if the evaluation failed.
@@ -85,7 +84,8 @@ func (s BeamStrategy) Explore(ctx context.Context, x Exploration) (*Plan, error)
 			}
 			return best(ctx, x, ok), nil
 		}
-		if allBudget(results) {
+		if ctx.Err() != nil {
+			// The run was canceled or exceeded a limit; backtracking is pointless.
 			for _, p := range plans[start+len(batch):] {
 				x.Prune(p)
 			}
@@ -96,43 +96,19 @@ func (s BeamStrategy) Explore(ctx context.Context, x Exploration) (*Plan, error)
 }
 
 // best returns the highest-scoring of the succeeded plans, scoring results
-// only when there is a choice to make. A complete plan beats a partial one
-// whatever the scores.
+// only when there is a choice to make.
 func best(ctx context.Context, x Exploration, ok []*Plan) *Plan {
-	if complete := slices.DeleteFunc(slices.Clone(ok), func(p *Plan) bool { return p.Status != StatusDone }); len(complete) > 0 {
-		ok = complete
-	}
 	if len(ok) == 1 {
 		return ok[0]
 	}
 	scores := parallel(ok, func(p *Plan) *Score { return x.ScoreResult(ctx, p) })
 	bi := 0
-	// Equal scores, including results that could not be scored when the
-	// budget ran out, go to the plan that finished more of its subtasks.
 	for i := range ok {
-		if v, bv := value(scores[i]), value(scores[bi]); v > bv || v == bv && finished(ok[i]) > finished(ok[bi]) {
+		if value(scores[i]) > value(scores[bi]) {
 			bi = i
 		}
 	}
 	return ok[bi]
-}
-
-// finished is the fraction of p's subtasks that were done, a partial one
-// counting half.
-func finished(p *Plan) float64 {
-	if len(p.Subtasks) == 0 {
-		return 0
-	}
-	n := 0.0
-	for _, st := range p.Subtasks {
-		switch st.Status {
-		case StatusDone:
-			n++
-		case StatusPartial:
-			n += 0.5
-		}
-	}
-	return n / float64(len(p.Subtasks))
 }
 
 func value(s *Score) float64 {
@@ -140,15 +116,6 @@ func value(s *Score) float64 {
 		return 0
 	}
 	return s.Value
-}
-
-func allBudget(errs []error) bool {
-	for _, err := range errs {
-		if !errors.Is(err, ErrBudgetExhausted) {
-			return false
-		}
-	}
-	return true
 }
 
 // parallel applies f to every item concurrently and returns the results in order.

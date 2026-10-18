@@ -2,7 +2,6 @@ package ethan
 
 import (
 	"context"
-	"strings"
 	"text/template"
 )
 
@@ -27,16 +26,4 @@ func (s *LLMSynthesizer) Synthesize(ctx context.Context, b Brief, results []Subt
 			Brief   Brief
 			Results []SubtaskResult
 		}{b, results}, s.MaxTokens)
-}
-
-// joinResults is the fallback synthesis used when the budget is exhausted.
-func joinResults(results []SubtaskResult) string {
-	var b strings.Builder
-	for i, r := range results {
-		if i > 0 {
-			b.WriteString("\n\n")
-		}
-		b.WriteString("## " + r.Description + "\n\n" + r.Output)
-	}
-	return b.String()
 }

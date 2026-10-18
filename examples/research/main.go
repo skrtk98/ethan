@@ -23,8 +23,8 @@ func main() {
 		model       = flag.String("model", anthropic.DefaultModel, "Claude model id")
 		effort      = flag.String("effort", "", "effort level: low, medium, high, xhigh or max")
 		maxDepth    = flag.Int("max-depth", 2, "depth at which tasks are no longer decomposed")
-		maxNodes    = flag.Int("max-nodes", 15, "tasks the run may start, leaves included")
-		maxTokens   = flag.Int("max-tokens", 1_000_000, "total token budget (0 = unlimited)")
+		maxTasks    = flag.Int("max-tasks", 15, "tasks the run may start, leaves included")
+		maxTokens   = flag.Int("max-tokens", 1_000_000, "total token limit (0 = unlimited)")
 		concurrency = flag.Int("concurrency", 4, "model calls in flight at once")
 		plans       = flag.Int("plans", 3, "alternative plans proposed per task")
 		beam        = flag.Int("beam", 2, "plans executed in parallel at the root")
@@ -68,7 +68,7 @@ func main() {
 				Instructions: "You are a careful analyst. Reason only from the inputs and notes you are given and keep their citations.",
 			},
 		),
-		ethan.WithBudget(ethan.Budget{MaxDepth: *maxDepth, MaxNodes: *maxNodes, MaxTokens: *maxTokens, MaxConcurrency: *concurrency}),
+		ethan.WithLimits(ethan.Limits{MaxDepth: *maxDepth, MaxTasks: *maxTasks, MaxTokens: *maxTokens, MaxConcurrency: *concurrency}),
 		ethan.WithMaxPlans(*plans),
 		ethan.WithStrategy(ethan.BeamStrategy{Width: *beam, DeepWidth: *deepBeam}),
 	}
@@ -82,17 +82,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "trace:", terr)
 		}
 	}
+	fmt.Fprintf(os.Stderr, "tokens: %d in, %d out\n", res.Usage.InputTokens, res.Usage.OutputTokens)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	switch {
-	case res.Partial:
-		fmt.Fprintln(os.Stderr, "warning: the budget ran out; the report is partial and names what is missing")
-	case res.Exhausted:
-		fmt.Fprintln(os.Stderr, "warning: the budget ran out; parts of the report may be less refined")
-	}
-	fmt.Fprintf(os.Stderr, "tokens: %d in, %d out\n", res.Usage.InputTokens, res.Usage.OutputTokens)
 
 	if *out == "" {
 		fmt.Println(res.Output)

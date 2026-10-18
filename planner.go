@@ -22,10 +22,6 @@ type PlanRequest struct {
 	// Depth is the task's depth; tasks at MaxDepth are always executed directly.
 	Depth    int
 	MaxDepth int
-	// RemainingNodes is how many more tasks the Run may start.
-	RemainingNodes int
-	// RemainingTokens is the unreserved token budget, or -1 if unlimited.
-	RemainingTokens int
 }
 
 // AgentInfo is what the planner knows about an agent.
