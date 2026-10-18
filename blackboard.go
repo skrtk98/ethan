@@ -1,9 +1,6 @@
 package ethan
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
 	"sync"
 	"time"
 )
@@ -45,34 +42,4 @@ func (b *Blackboard) Notes() []Note {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]Note{}, b.notes...)
-}
-
-const noteToolName = "note"
-
-// noteTool lets an agent post to the blackboard on behalf of its task.
-type noteTool struct {
-	author string
-	post   func(author, text string)
-}
-
-func (noteTool) Spec() ToolSpec {
-	return ToolSpec{
-		Name:        noteToolName,
-		Description: "Share a concise fact, finding or decision with the other agents working on the same goal.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}`),
-	}
-}
-
-func (t noteTool) Call(_ context.Context, input json.RawMessage) (string, error) {
-	var in struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(input, &in); err != nil {
-		return "", err
-	}
-	if in.Text == "" {
-		return "", errors.New("text is empty")
-	}
-	t.post(t.author, in.Text)
-	return "noted", nil
 }
