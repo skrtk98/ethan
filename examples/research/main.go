@@ -94,6 +94,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+		if len(events) == 0 {
+			fmt.Fprintf(os.Stderr, "error: %s holds no run: it stopped before starting; delete the file and start a new run\n", *journalPath)
+			os.Exit(1)
+		}
 	}
 	if *journalPath != "" {
 		// A journal holds one run: a new run gets a file of its own.
