@@ -93,8 +93,10 @@ func replay(events []Event) (*replayed, error) {
 		case EventResultScored:
 			p.ResultScore = e.Score
 		case EventPlanChosen:
+			// The choice finishes the task, even if the run stopped before
+			// recording it done.
 			t := tasks[e.TaskID]
-			t.Chosen, t.Output, t.Score = p.ID, p.Output, p.ResultScore
+			t.Chosen, t.Output, t.Score, t.Status, t.Error = p.ID, p.Output, p.ResultScore, StatusDone, ""
 		case EventNoteAdded:
 			s.notes = append(s.notes, Note{Author: e.TaskID, Text: e.Text, Time: e.Time})
 		}
@@ -117,13 +119,6 @@ func (s *replayed) usage() Usage { return s.total }
 func reopen(t *Task) {
 	if t.Status == StatusDone {
 		return
-	}
-	for _, p := range t.Plans {
-		if p.ID == t.Chosen && p.Status == StatusDone {
-			// The run stopped after choosing, before recording the task done.
-			t.Status, t.Error = StatusDone, ""
-			return
-		}
 	}
 	t.Status, t.Error, t.Chosen = StatusPending, "", ""
 	for _, p := range t.Plans {

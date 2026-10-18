@@ -224,6 +224,14 @@ func TestResumeAfterTheChoiceFinishesTheTask(t *testing.T) {
 	if resumed.Output != "out(GOOD)" || len(again.Calls(ethan.TagExecute)) != 0 {
 		t.Errorf("Output = %q after %d executions; want out(GOOD) and none", resumed.Output, len(again.Calls(ethan.TagExecute)))
 	}
+	// The journal of the resumed run replays to the same finished tree.
+	replayed, err := ethan.Replay(resumed.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Root.Status != ethan.StatusDone || replayed.Output != resumed.Output {
+		t.Errorf("replayed root %s with output %q", replayed.Root.Status, replayed.Output)
+	}
 }
 
 func TestUsageIsJournaledPerCall(t *testing.T) {
@@ -285,6 +293,45 @@ func TestNoToolRunsOnceTheRunIsCanceled(t *testing.T) {
 	if !errors.Is(err, ethan.ErrTaskLimit) {
 		t.Fatalf("err = %v, want ErrTaskLimit", err)
 	}
+	if len(res.Notes) != 0 {
+		t.Errorf("notes = %v", res.Notes)
+	}
+}
+
+// twoNotes is a tool-calling response asking for two notes.
+func twoNotes() *ethan.Response {
+	call := func(id, text string) ethan.Part {
+		return ethan.Part{ToolCall: &ethan.ToolCall{ID: id, Name: "note", Input: json.RawMessage(`{"text":"` + text + `"}`)}}
+	}
+	return &ethan.Response{Usage: ethantest.DefaultUsage, Parts: []ethan.Part{call("c1", "first"), call("c2", "second")}}
+}
+
+// cancelingTool cancels the run while it runs.
+type cancelingTool struct{ cancel context.CancelFunc }
+
+func (cancelingTool) Spec() ethan.ToolSpec {
+	return ethan.ToolSpec{Name: "stop", InputSchema: json.RawMessage(`{"type":"object"}`)}
+}
+
+func (c cancelingTool) Call(context.Context, json.RawMessage) (string, error) {
+	c.cancel()
+	return "stopped", nil
+}
+
+func TestNoToolRunsAfterACancelBetweenTools(t *testing.T) {
+	// The first tool cancels the run; the second, a note, must not run.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := ethantest.New().
+		On(ethan.TagPlan, atomicPlan()).
+		On(ethan.TagExecute, func(ethan.Request) (*ethan.Response, error) {
+			r := twoNotes()
+			r.Parts[0].ToolCall.Name = "stop"
+			return r, nil
+		})
+	agent := ethan.Agent{Name: "a", Tools: []ethan.Tool{cancelingTool{cancel: cancel}}}
+
+	res, _ := ethan.New(m, ethan.WithAgents(agent)).Run(ctx, "goal")
 	if len(res.Notes) != 0 {
 		t.Errorf("notes = %v", res.Notes)
 	}

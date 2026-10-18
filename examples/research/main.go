@@ -94,6 +94,11 @@ func main() {
 		}
 	}
 	if *journalPath != "" {
+		// A journal holds one run: a new run must not append to another's.
+		if fi, err := os.Stat(*journalPath); !*resume && err == nil && fi.Size() > 0 {
+			fmt.Fprintf(os.Stderr, "error: %s already holds a run; resume it with -resume or choose another file\n", *journalPath)
+			os.Exit(1)
+		}
 		j, err := ethan.CreateJournal(*journalPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)

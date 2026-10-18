@@ -50,12 +50,12 @@ func execute(ctx context.Context, m Model, t *template.Template, agent Agent, to
 		if len(calls) == 0 {
 			return resp.Text(), nil
 		}
-		if err := ctx.Err(); err != nil {
-			return "", err // no tool runs once the run is canceled
-		}
 		msgs = append(msgs, Message{Role: RoleAssistant, Parts: resp.Parts})
 		results := make([]Part, len(calls))
 		for i, c := range calls {
+			if err := ctx.Err(); err != nil {
+				return "", err // no tool runs once the run is canceled
+			}
 			results[i] = Part{ToolResult: callTool(ctx, byName, c)}
 		}
 		msgs = append(msgs, Message{Role: RoleUser, Parts: results})
