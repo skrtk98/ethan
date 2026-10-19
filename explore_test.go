@@ -210,6 +210,49 @@ func TestInvalidPlansAreDroppedAndTaskFallsBackToDirectExecution(t *testing.T) {
 	if !res.Root.Atomic || res.Output != "out(goal)" {
 		t.Errorf("root = %+v", res.Root)
 	}
+	if e := firstEvent(res, ethan.EventTaskDecided); e.Text != "atomic: none of the 3 proposed plans is valid" {
+		t.Errorf("decision = %q", e.Text)
+	}
+}
+
+func TestAFailedPlannerIsRecordedInTheDecision(t *testing.T) {
+	m := ethantest.New().On(ethan.TagExecute, echoTask) // no plan handler
+
+	res, err := ethan.New(m).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := firstEvent(res, ethan.EventTaskDecided); !strings.HasPrefix(e.Text, "atomic: plan: ") {
+		t.Errorf("decision = %q", e.Text)
+	}
+}
+
+func TestAFailedScoreIsRecorded(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot( // more plans than the beam is wide, so they are scored
+			plan("one", sub{ID: "a", Description: "A"}), plan("two", sub{ID: "a", Description: "B"}), plan("three", sub{ID: "a", Description: "C"}))).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults) // no score handlers
+
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1})).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []ethan.EventKind{ethan.EventPlanScored, ethan.EventResultScored} {
+		if e := firstEvent(res, kind); e.Score != nil || e.Text == "" {
+			t.Errorf("%s: score %v, text %q", kind, e.Score, e.Text)
+		}
+	}
+}
+
+// firstEvent returns the first event of kind, or the zero Event.
+func firstEvent(res *ethan.Result, kind ethan.EventKind) ethan.Event {
+	for _, e := range res.Events {
+		if e.Kind == kind {
+			return e
+		}
+	}
+	return ethan.Event{}
 }
 
 func TestMaxDepthStopsDecomposition(t *testing.T) {

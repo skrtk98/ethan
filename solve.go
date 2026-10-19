@@ -77,6 +77,7 @@ func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []Su
 	case len(t.Plans) > 0:
 		return r.explore(ctx, t, b, t.Plans)
 	}
+	decision := "atomic"
 	if t.Depth < r.engine.limits.MaxDepth {
 		d, err := r.planner.Plan(ctx, r.planRequest(t, b))
 		switch {
@@ -94,10 +95,13 @@ func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []Su
 				r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: strconv.Itoa(len(plans)), Plans: proposals})
 				return r.explore(ctx, t, b, plans)
 			}
+			decision = fmt.Sprintf("atomic: none of the %d proposed plans is valid", len(d.Plans))
+		case err != nil:
+			decision = "atomic: plan: " + err.Error()
 		}
 		// A failed or unusable decision falls back to direct execution.
 	}
-	r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: "atomic"})
+	r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: decision})
 	return r.executeLeaf(ctx, t, b)
 }
 
@@ -246,6 +250,9 @@ func (x *exploration) ScorePlan(ctx context.Context, p *Plan) *Score {
 	}
 	s, err := x.run.evaluator.ScorePlan(ctx, x.brief, proposalOf(p))
 	if err != nil {
+		if ctx.Err() == nil {
+			x.run.emit(Event{Kind: EventPlanScored, TaskID: x.task.ID, PlanID: p.ID, Text: err.Error()})
+		}
 		return nil
 	}
 	p.PlanScore = &s
@@ -259,6 +266,9 @@ func (x *exploration) ScoreResult(ctx context.Context, p *Plan) *Score {
 	}
 	s, err := x.run.evaluator.ScoreResult(ctx, x.brief, p.Output)
 	if err != nil {
+		if ctx.Err() == nil {
+			x.run.emit(Event{Kind: EventResultScored, TaskID: x.task.ID, PlanID: p.ID, Text: err.Error()})
+		}
 		return nil
 	}
 	p.ResultScore = &s
