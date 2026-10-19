@@ -231,6 +231,9 @@ func progress(e ethan.Event) {
 		ethan.EventTaskFailed, ethan.EventPlanFailed:
 		line += " " + clip(e.Text, 90)
 	}
+	if e.Reason != "" {
+		line += " (" + clip(e.Reason, 90) + ")"
+	}
 	fmt.Fprintln(os.Stderr, line)
 }
 
