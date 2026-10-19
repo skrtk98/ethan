@@ -10,13 +10,9 @@ import (
 	"github.com/skrtk98/ethan/ethantest"
 )
 
-func atomicPlan() ethantest.Handler {
-	return ethantest.ReplyJSON(map[string]any{"atomic": true})
-}
-
 func TestRunExecutesAtomicGoalDirectly(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, atomicPlan()).
+		On(ethan.TagPlan, ethantest.Atomic()).
 		On(ethan.TagExecute, ethantest.ReplyText("42")).
 		On(ethan.TagScoreResult, ethantest.ReplyJSON(ethan.Score{Value: 0.9, Reason: "ok"}))
 
@@ -50,17 +46,15 @@ func (echoTool) Call(_ context.Context, in json.RawMessage) (string, error) {
 
 func TestAgentRunsToolLoop(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, atomicPlan()).
+		On(ethan.TagPlan, ethantest.Atomic()).
 		On(ethan.TagScoreResult, ethantest.ReplyJSON(ethan.Score{Value: 1})).
-		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
-			last := req.Messages[len(req.Messages)-1]
-			if r := last.Parts[0].ToolResult; r != nil {
-				return ethantest.Text("got " + r.Content), nil
-			}
-			return &ethan.Response{Parts: []ethan.Part{{ToolCall: &ethan.ToolCall{
-				ID: "c1", Name: "echo", Input: json.RawMessage(`"hi"`),
-			}}}}, nil
-		})
+		On(ethan.TagExecute, ethantest.Sequence(
+			ethantest.Reply(ethantest.ToolCalls(ethan.ToolCall{ID: "c1", Name: "echo", Input: json.RawMessage(`"hi"`)})),
+			func(req ethan.Request) (*ethan.Response, error) {
+				last := req.Messages[len(req.Messages)-1]
+				return ethantest.Text("got " + last.Parts[0].ToolResult.Content), nil
+			},
+		))
 
 	agent := ethan.Agent{Name: "a", Tools: []ethan.Tool{echoTool{}}}
 	res, err := ethan.New(m, ethan.WithAgents(agent)).Run(context.Background(), "say hi")
@@ -73,7 +67,7 @@ func TestAgentRunsToolLoop(t *testing.T) {
 }
 
 func TestRunFailsWhenExecutionFails(t *testing.T) {
-	m := ethantest.New().On(ethan.TagPlan, atomicPlan()) // no execute handler
+	m := ethantest.New().On(ethan.TagPlan, ethantest.Atomic()) // no execute handler
 
 	res, err := ethan.New(m).Run(context.Background(), "goal")
 	if err == nil {

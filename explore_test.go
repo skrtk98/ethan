@@ -21,30 +21,9 @@ func plan(rationale string, subtasks ...sub) ethan.PlanProposal {
 	return ethan.PlanProposal{Rationale: rationale, Subtasks: subtasks}
 }
 
-// decomposeRoot makes the planner decompose the root into plans and treat
-// every other task as atomic.
-func decomposeRoot(plans ...ethan.PlanProposal) ethantest.Handler {
-	return func(req ethan.Request) (*ethan.Response, error) {
-		if strings.Contains(ethantest.Prompt(req), "<ancestors>") {
-			return ethantest.JSON(ethan.Decision{Atomic: true}), nil
-		}
-		return ethantest.JSON(ethan.Decision{Plans: plans}), nil
-	}
-}
-
-var taskRe = regexp.MustCompile(`(?s)<task>\n(.*?)\n</task>`)
-
-func taskOf(req ethan.Request) string {
-	m := taskRe.FindStringSubmatch(ethantest.Prompt(req))
-	if m == nil {
-		return ""
-	}
-	return m[1]
-}
-
 // echoTask answers each execution with "out(<task>)".
 func echoTask(req ethan.Request) (*ethan.Response, error) {
-	return ethantest.Text("out(" + taskOf(req) + ")"), nil
+	return ethantest.Text("out(" + ethantest.Task(req) + ")"), nil
 }
 
 // joinResults synthesizes by concatenating the subtask outputs.
@@ -55,7 +34,7 @@ func joinResults(req ethan.Request) (*ethan.Response, error) {
 
 func TestDecompositionRunsDependenciesInOrderAndSynthesizes(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("only",
+		On(ethan.TagPlan, ethantest.Decompose(plan("only",
 			sub{ID: "a", Description: "A"},
 			sub{ID: "b", Description: "B", DependsOn: []string{"a"}},
 		))).
@@ -70,7 +49,7 @@ func TestDecompositionRunsDependenciesInOrderAndSynthesizes(t *testing.T) {
 		t.Errorf("Output = %q", res.Output)
 	}
 	for _, c := range m.Calls(ethan.TagExecute) {
-		if taskOf(c) == "B" && !strings.Contains(ethantest.Prompt(c), "out(A)") {
+		if ethantest.Task(c) == "B" && !strings.Contains(ethantest.Prompt(c), "out(A)") {
 			t.Error("B was not given A's output")
 		}
 	}
@@ -87,7 +66,7 @@ func TestIndependentSubtasksRunInParallel(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
 		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
 			wg.Done()
 			done := make(chan struct{})
@@ -120,7 +99,7 @@ func scoreBy(scores map[string]float64) ethantest.Handler {
 }
 
 func threePlans() ethantest.Handler {
-	return decomposeRoot(
+	return ethantest.Decompose(
 		plan("plan-low", sub{ID: "x", Description: "LOW"}),
 		plan("plan-high", sub{ID: "x", Description: "HIGH"}),
 		plan("plan-mid", sub{ID: "x", Description: "MID"}),
@@ -162,7 +141,7 @@ func TestBeamBacktracksToRemainingPlansOnFailure(t *testing.T) {
 		On(ethan.TagPlan, threePlans()).
 		On(ethan.TagScorePlan, scoreBy(map[string]float64{"plan-low": 0.1, "plan-high": 0.9, "plan-mid": 0.5})).
 		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
-			if taskOf(req) == "LOW" {
+			if ethantest.Task(req) == "LOW" {
 				return echoTask(req)
 			}
 			return nil, errors.New("boom")
@@ -196,7 +175,7 @@ func TestRunFailsWhenAllPlansFail(t *testing.T) {
 
 func TestInvalidPlansAreDroppedAndTaskFallsBackToDirectExecution(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(
+		On(ethan.TagPlan, ethantest.Decompose(
 			plan("cycle", sub{ID: "a", Description: "A", DependsOn: []string{"b"}}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}}),
 			plan("dangling", sub{ID: "a", Description: "A", DependsOn: []string{"zzz"}}),
 			plan("empty"),
@@ -229,7 +208,7 @@ func TestAFailedPlannerIsRecordedInTheDecision(t *testing.T) {
 
 func TestAFailedScoreIsRecorded(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot( // more plans than the beam is wide, so they are scored
+		On(ethan.TagPlan, ethantest.Decompose( // more plans than the beam is wide, so they are scored
 			plan("one", sub{ID: "a", Description: "A"}), plan("two", sub{ID: "a", Description: "B"}), plan("three", sub{ID: "a", Description: "C"}))).
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults) // no score handlers
@@ -279,7 +258,7 @@ func TestTaskLimitCancelsTheRun(t *testing.T) {
 	// The root and two subtasks use up MaxTasks; starting a third cancels
 	// the whole run.
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p",
+		On(ethan.TagPlan, ethantest.Decompose(plan("p",
 			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"},
 			sub{ID: "c", Description: "C"}, sub{ID: "d", Description: "D"},
 		))).
@@ -300,7 +279,7 @@ func TestTaskLimitCancelsTheRun(t *testing.T) {
 
 func TestTokenLimitStopsCallsOnceReached(t *testing.T) {
 	// The plan spends 20, which reaches the limit: execution never starts.
-	m := ethantest.New().On(ethan.TagPlan, atomicPlan()).On(ethan.TagExecute, echoTask)
+	m := ethantest.New().On(ethan.TagPlan, ethantest.Atomic()).On(ethan.TagExecute, echoTask)
 
 	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxTokens: 20})).Run(context.Background(), "goal")
 	if !errors.Is(err, ethan.ErrTokenLimit) {
@@ -320,7 +299,7 @@ type blockingModel struct {
 }
 
 func (m blockingModel) Generate(ctx context.Context, req ethan.Request) (*ethan.Response, error) {
-	if req.Tag == ethan.TagExecute && taskOf(req) == m.task {
+	if req.Tag == ethan.TagExecute && ethantest.Task(req) == m.task {
 		close(m.started)
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -333,7 +312,7 @@ func TestCallPastTheTokenLimitCancelsCallsInFlight(t *testing.T) {
 	// past the limit while B is still running; B must be canceled.
 	started := make(chan struct{})
 	m := blockingModel{task: "B", started: started, Model: ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
 		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
 			<-started
 			return echoTask(req)
@@ -362,7 +341,7 @@ func TestExceededLimitStopsBacktracking(t *testing.T) {
 	// executing the first plan carries the total past the limit. The second
 	// plan must not be tried.
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p1", sub{ID: "a", Description: "A"}), plan("p2", sub{ID: "b", Description: "B"}))).
+		On(ethan.TagPlan, ethantest.Decompose(plan("p1", sub{ID: "a", Description: "A"}), plan("p2", sub{ID: "b", Description: "B"}))).
 		On(ethan.TagScorePlan, ethantest.ReplyJSON(ethan.Score{Value: 0.5})).
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults)
@@ -383,12 +362,12 @@ func TestLimitFailsTheRunEvenIfAParallelPlanSucceeded(t *testing.T) {
 	// keep "fast" done for a resume to choose among.
 	fastDone := make(chan struct{})
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(
+		On(ethan.TagPlan, ethantest.Decompose(
 			plan("fast", sub{ID: "f", Description: "F"}),
 			plan("slow", sub{ID: "s1", Description: "S1"}, sub{ID: "s2", Description: "S2", DependsOn: []string{"s1"}}),
 		)).
 		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
-			if taskOf(req) == "S1" {
+			if ethantest.Task(req) == "S1" {
 				<-fastDone
 			}
 			return echoTask(req)
@@ -412,7 +391,7 @@ func TestLimitFailsTheRunEvenIfAParallelPlanSucceeded(t *testing.T) {
 func TestMaxConcurrencyLimitsModelCalls(t *testing.T) {
 	var inFlight, peak atomic.Int32
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}, sub{ID: "c", Description: "C"}))).
+		On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}, sub{ID: "c", Description: "C"}))).
 		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
 			n := inFlight.Add(1)
 			defer inFlight.Add(-1)
@@ -437,7 +416,7 @@ func TestMaxConcurrencyLimitsModelCalls(t *testing.T) {
 
 func TestUsageOfFailedCallsIsCounted(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, atomicPlan()).
+		On(ethan.TagPlan, ethantest.Atomic()).
 		On(ethan.TagExecute, func(ethan.Request) (*ethan.Response, error) {
 			return &ethan.Response{Usage: ethan.Usage{InputTokens: 500}}, errors.New("refused")
 		})
@@ -451,7 +430,7 @@ func TestUsageOfFailedCallsIsCounted(t *testing.T) {
 func TestBeamRunsOnePlanAtATimeBelowRoot(t *testing.T) {
 	m := ethantest.New().
 		On(ethan.TagPlan, func(req ethan.Request) (*ethan.Response, error) {
-			switch taskOf(req) {
+			switch ethantest.Task(req) {
 			case "goal":
 				return ethantest.JSON(ethan.Decision{Plans: []ethan.PlanProposal{plan("p", sub{ID: "x", Description: "X"})}}), nil
 			case "X":
@@ -479,7 +458,7 @@ func TestBeamRunsOnePlanAtATimeBelowRoot(t *testing.T) {
 }
 
 func TestPlannerSeesItsDepth(t *testing.T) {
-	m := ethantest.New().On(ethan.TagPlan, atomicPlan()).On(ethan.TagExecute, echoTask)
+	m := ethantest.New().On(ethan.TagPlan, ethantest.Atomic()).On(ethan.TagExecute, echoTask)
 
 	if _, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 3})).Run(context.Background(), "goal"); err != nil {
 		t.Fatal(err)
@@ -494,7 +473,7 @@ func TestCancellationFailsTheRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p",
+		On(ethan.TagPlan, ethantest.Decompose(plan("p",
 			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}},
 		))).
 		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
@@ -514,7 +493,7 @@ func TestCancellationFailsTheRun(t *testing.T) {
 
 func TestARepeatedDependencyCountsOnce(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p",
+		On(ethan.TagPlan, ethantest.Decompose(plan("p",
 			sub{ID: "a", Description: "A"},
 			sub{ID: "b", Description: "B", DependsOn: []string{"a", "a"}},
 		))).
@@ -539,7 +518,7 @@ func TestMaxPlansBelowOneMeansTheDefault(t *testing.T) {
 	}
 	for _, n := range []int{0, -1} {
 		m := ethantest.New().
-			On(ethan.TagPlan, decomposeRoot(proposals...)).
+			On(ethan.TagPlan, ethantest.Decompose(proposals...)).
 			On(ethan.TagExecute, echoTask).
 			On(ethan.TagSynthesize, joinResults)
 		res, err := ethan.New(m, ethan.WithMaxPlans(n), ethan.WithLimits(ethan.Limits{MaxDepth: 1})).Run(context.Background(), "goal")
@@ -554,7 +533,7 @@ func TestMaxPlansBelowOneMeansTheDefault(t *testing.T) {
 
 func TestAPlanNamingAnUnknownAgentIsDropped(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(
+		On(ethan.TagPlan, ethantest.Decompose(
 			plan("typo", sub{ID: "a", Description: "A", Agent: "reseacher"}),
 			plan("known", sub{ID: "a", Description: "B", Agent: ethan.DefaultAgent.Name}, sub{ID: "b", Description: "C"}),
 		)).
@@ -572,7 +551,7 @@ func TestAPlanNamingAnUnknownAgentIsDropped(t *testing.T) {
 
 func TestAnEmptyAgentNameMeansTheFirstAgent(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}))).
+		On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A"}))).
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults)
 	unnamed := ethantest.New() // fails every call
@@ -592,7 +571,7 @@ func TestAnEmptyAgentNameMeansTheFirstAgent(t *testing.T) {
 func TestResumingWithoutAPlannedAgentFails(t *testing.T) {
 	agents := []ethan.Agent{{Name: "writer", Description: "writes"}, {Name: "coder", Description: "codes", Model: ethantest.New()}}
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A", Agent: "coder"}))).
+		On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A", Agent: "coder"}))).
 		On(ethan.TagExecute, echoTask)
 	first, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1}), ethan.WithAgents(agents...)).Run(context.Background(), "goal")
 	if err == nil {

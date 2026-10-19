@@ -117,6 +117,21 @@ Tools implement `Tool` (`Spec` and `Call`). Server-side tools such as web search
 
 `ethantest.Model` is a scripted model that routes each request by its tag (`plan`, `execute`, `score_plan`, `score_result`, `synthesize`). Tests built on it are deterministic and need no network:
 
+```go
+m := ethantest.New().
+	On(ethan.TagPlan, ethantest.Decompose(ethan.PlanProposal{Subtasks: []ethan.SubtaskProposal{
+		{ID: "a", Description: "find A"}, {ID: "b", Description: "find B"},
+	}})).
+	On(ethan.TagExecute, ethantest.ByTask(map[string]ethantest.Handler{
+		"find A": ethantest.Sequence( // a tool loop: a call, then the answer
+			ethantest.Reply(ethantest.ToolCalls(ethan.ToolCall{ID: "c1", Name: "search", Input: json.RawMessage(`{"q":"A"}`)})),
+			ethantest.ReplyText("A"),
+		),
+		"find B": ethantest.ReplyText("B"),
+	})).
+	On(ethan.TagSynthesize, ethantest.ReplyText("A and B"))
+```
+
 ```sh
 go test -race ./...
 go test -tags live ./anthropic ./openai   # calls the real APIs; OLLAMA_MODEL=gpt-oss:20b adds Ollama

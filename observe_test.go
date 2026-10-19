@@ -15,16 +15,14 @@ import (
 
 func TestNotesAreSharedThroughTheBlackboard(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p",
+		On(ethan.TagPlan, ethantest.Decompose(plan("p",
 			sub{ID: "a", Description: "A"},
 			sub{ID: "b", Description: "B", DependsOn: []string{"a"}},
 		))).
 		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
 			last := req.Messages[len(req.Messages)-1]
-			if taskOf(req) == "A" && last.Parts[0].ToolResult == nil {
-				return &ethan.Response{Parts: []ethan.Part{{ToolCall: &ethan.ToolCall{
-					ID: "n1", Name: "note", Input: json.RawMessage(`{"text":"fact X"}`),
-				}}}}, nil
+			if ethantest.Task(req) == "A" && last.Parts[0].ToolResult == nil {
+				return ethantest.ToolCalls(ethan.ToolCall{ID: "n1", Name: "note", Input: json.RawMessage(`{"text":"fact X"}`)}), nil
 			}
 			return echoTask(req)
 		}).
@@ -38,7 +36,7 @@ func TestNotesAreSharedThroughTheBlackboard(t *testing.T) {
 		t.Fatalf("Notes = %+v", res.Notes)
 	}
 	for _, c := range m.Calls(ethan.TagExecute) {
-		if taskOf(c) == "B" && !strings.Contains(ethantest.Prompt(c), "fact X") {
+		if ethantest.Task(c) == "B" && !strings.Contains(ethantest.Prompt(c), "fact X") {
 			t.Error("B's prompt does not include the note")
 		}
 	}
@@ -49,7 +47,7 @@ func TestNotesAreSharedThroughTheBlackboard(t *testing.T) {
 
 func TestSubtasksRunOnTheirAssignedAgent(t *testing.T) {
 	control := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p",
+		On(ethan.TagPlan, ethantest.Decompose(plan("p",
 			sub{ID: "a", Description: "A", Agent: "writer"},
 			sub{ID: "b", Description: "B", Agent: "coder"},
 			sub{ID: "c", Description: "C"},
@@ -66,7 +64,7 @@ func TestSubtasksRunOnTheirAssignedAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := coderModel.Calls(ethan.TagExecute)
-	if len(calls) != 1 || taskOf(calls[0]) != "B" || !strings.HasPrefix(calls[0].System, "You write Go.") {
+	if len(calls) != 1 || ethantest.Task(calls[0]) != "B" || !strings.HasPrefix(calls[0].System, "You write Go.") {
 		t.Errorf("coder calls = %+v", calls)
 	}
 	agents := []string{}
@@ -117,7 +115,7 @@ func TestObserverSeesTheExploration(t *testing.T) {
 }
 
 func TestWriteTraceProducesJSON(t *testing.T) {
-	m := ethantest.New().On(ethan.TagPlan, atomicPlan()).On(ethan.TagExecute, ethantest.ReplyText("done"))
+	m := ethantest.New().On(ethan.TagPlan, ethantest.Atomic()).On(ethan.TagExecute, ethantest.ReplyText("done"))
 	res, err := ethan.New(m).Run(context.Background(), "goal")
 	if err != nil {
 		t.Fatal(err)

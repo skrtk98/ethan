@@ -15,7 +15,7 @@ import (
 // chain decomposes the root into A, B after A, and C after B.
 func chain() *ethantest.Model {
 	return ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p",
+		On(ethan.TagPlan, ethantest.Decompose(plan("p",
 			sub{ID: "a", Description: "A"},
 			sub{ID: "b", Description: "B", DependsOn: []string{"a"}},
 			sub{ID: "c", Description: "C", DependsOn: []string{"b"}},
@@ -55,7 +55,7 @@ func TestResumeContinuesWhereTheRunStopped(t *testing.T) {
 	}
 	var executed []string
 	for _, req := range m.Calls(ethan.TagExecute) {
-		executed = append(executed, taskOf(req))
+		executed = append(executed, ethantest.Task(req))
 	}
 	if len(executed) != 2 || executed[0] != "B" || executed[1] != "C" {
 		t.Errorf("resumed run executed %v, want [B C]", executed)
@@ -159,7 +159,7 @@ func TestReplayRejectsForeignEvents(t *testing.T) {
 func TestReplayRebuildsAStoppedRun(t *testing.T) {
 	// Some subtasks are never started; that, too, must be in the journal.
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p",
+		On(ethan.TagPlan, ethantest.Decompose(plan("p",
 			sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}},
 			sub{ID: "c", Description: "C", DependsOn: []string{"b"}},
 		))).
@@ -201,10 +201,10 @@ func TestResumeAfterTheChoiceFinishesTheTask(t *testing.T) {
 	// process dies right after recording the choice; resuming must not try
 	// "bad" again.
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("bad", sub{ID: "x", Description: "BAD"}), plan("good", sub{ID: "x", Description: "GOOD"}))).
+		On(ethan.TagPlan, ethantest.Decompose(plan("bad", sub{ID: "x", Description: "BAD"}), plan("good", sub{ID: "x", Description: "GOOD"}))).
 		On(ethan.TagScorePlan, scoreBy(map[string]float64{"bad": 0.9, "good": 0.5})).
 		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
-			if taskOf(req) == "BAD" {
+			if ethantest.Task(req) == "BAD" {
 				return nil, errors.New("boom")
 			}
 			return echoTask(req)
@@ -253,11 +253,9 @@ func TestNoToolRunsAfterTheTokenLimit(t *testing.T) {
 	// The execution's response carries the total past the limit and asks for
 	// a note; the note must not be posted.
 	m := ethantest.New().
-		On(ethan.TagPlan, atomicPlan()).
+		On(ethan.TagPlan, ethantest.Atomic()).
 		On(ethan.TagExecute, func(ethan.Request) (*ethan.Response, error) {
-			return &ethan.Response{Usage: ethantest.DefaultUsage, Parts: []ethan.Part{{ToolCall: &ethan.ToolCall{
-				ID: "c1", Name: "note", Input: json.RawMessage(`{"text":"posted too late"}`),
-			}}}}, nil
+			return ethantest.ToolCalls(ethan.ToolCall{ID: "c1", Name: "note", Input: json.RawMessage(`{"text":"posted too late"}`)}), nil
 		})
 
 	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxTokens: 30})).Run(context.Background(), "goal")
@@ -276,12 +274,10 @@ func TestNoToolRunsOnceTheRunIsCanceled(t *testing.T) {
 	var once sync.Once
 	pruned2 := make(chan struct{})
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
 		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
 			<-pruned2
-			return &ethan.Response{Usage: ethantest.DefaultUsage, Parts: []ethan.Part{{ToolCall: &ethan.ToolCall{
-				ID: "c1", Name: "note", Input: json.RawMessage(`{"text":"posted after the cancel"}`),
-			}}}}, nil
+			return ethantest.ToolCalls(ethan.ToolCall{ID: "c1", Name: "note", Input: json.RawMessage(`{"text":"posted after the cancel"}`)}), nil
 		})
 	onPrune := ethan.WithObserver(ethan.ObserverFunc(func(e ethan.Event) {
 		if e.Kind == ethan.EventTaskPruned {
@@ -300,10 +296,10 @@ func TestNoToolRunsOnceTheRunIsCanceled(t *testing.T) {
 
 // twoNotes is a tool-calling response asking for two notes.
 func twoNotes() *ethan.Response {
-	call := func(id, text string) ethan.Part {
-		return ethan.Part{ToolCall: &ethan.ToolCall{ID: id, Name: "note", Input: json.RawMessage(`{"text":"` + text + `"}`)}}
+	call := func(id, text string) ethan.ToolCall {
+		return ethan.ToolCall{ID: id, Name: "note", Input: json.RawMessage(`{"text":"` + text + `"}`)}
 	}
-	return &ethan.Response{Usage: ethantest.DefaultUsage, Parts: []ethan.Part{call("c1", "first"), call("c2", "second")}}
+	return ethantest.ToolCalls(call("c1", "first"), call("c2", "second"))
 }
 
 // cancelingTool cancels the run while it runs.
@@ -323,7 +319,7 @@ func TestNoToolRunsAfterACancelBetweenTools(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m := ethantest.New().
-		On(ethan.TagPlan, atomicPlan()).
+		On(ethan.TagPlan, ethantest.Atomic()).
 		On(ethan.TagExecute, func(ethan.Request) (*ethan.Response, error) {
 			r := twoNotes()
 			r.Parts[0].ToolCall.Name = "stop"
@@ -342,9 +338,9 @@ func TestResumeNeverPrunesAFinishedSubtask(t *testing.T) {
 	aDone := make(chan struct{})
 	var once sync.Once
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
 		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
-			if taskOf(req) == "B" {
+			if ethantest.Task(req) == "B" {
 				<-aDone
 				return nil, errors.New("B failed")
 			}

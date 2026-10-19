@@ -19,7 +19,7 @@ func TestJournalRecordsEveryEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}}))).
+		On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}}))).
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults)
 
@@ -55,7 +55,7 @@ func TestJournalRecordsEveryEvent(t *testing.T) {
 func TestTaskUsageCountsItsOwnCalls(t *testing.T) {
 	// The root plans and synthesizes (2 calls); A and B execute (1 call each).
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults)
 
@@ -107,7 +107,7 @@ func (j *failingJournal) Append(ethan.Event) error {
 
 func TestJournalFailureCancelsTheRun(t *testing.T) {
 	m := ethantest.New().
-		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}}))).
+		On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}}))).
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults)
 
