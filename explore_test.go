@@ -468,3 +468,23 @@ func TestCancellationFailsTheRun(t *testing.T) {
 		t.Errorf("root = %s", res.Root.Status)
 	}
 }
+
+func TestARepeatedDependencyCountsOnce(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p",
+			sub{ID: "a", Description: "A"},
+			sub{ID: "b", Description: "B", DependsOn: []string{"a", "a"}},
+		))).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults)
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1})).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Output != "out(A)+out(B)" {
+		t.Errorf("Output = %q", res.Output)
+	}
+	if b := res.Root.Plans[0].Subtasks[1]; len(b.DependsOn) != 1 {
+		t.Errorf("B depends on %v", b.DependsOn)
+	}
+}

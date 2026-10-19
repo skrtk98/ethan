@@ -147,7 +147,9 @@ func newPlans(parent *Task, proposals []PlanProposal, agent func(string) string)
 		for _, sp := range pp.Subtasks {
 			st := &Task{ID: ids[sp.ID], Description: sp.Description, Agent: agent(sp.Agent), Depth: parent.Depth + 1, Status: StatusPending}
 			for _, d := range sp.DependsOn {
-				st.DependsOn = append(st.DependsOn, ids[d])
+				if !slices.Contains(st.DependsOn, ids[d]) {
+					st.DependsOn = append(st.DependsOn, ids[d])
+				}
 			}
 			p.Subtasks = append(p.Subtasks, st)
 		}
@@ -165,7 +167,13 @@ func validProposal(pp PlanProposal) bool {
 		if _, dup := deps[s.ID]; dup {
 			return false
 		}
-		deps[s.ID] = s.DependsOn
+		var ds []string
+		for _, d := range s.DependsOn {
+			if !slices.Contains(ds, d) {
+				ds = append(ds, d)
+			}
+		}
+		deps[s.ID] = ds
 	}
 	for _, ds := range deps {
 		for _, d := range ds {
