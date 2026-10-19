@@ -50,8 +50,11 @@ type Event struct {
 }
 
 // Observer receives the events of a Run. The engine delivers events one at
-// a time, so implementations need not be safe for concurrent use, but they
-// should return quickly.
+// a time and in journal order, so implementations need not be safe for
+// concurrent use. The Run waits while an observer runs: one doing slow work,
+// such as writing to the network, should hand events to its own goroutine,
+// e.g. through a channel. Observers cannot emit events, so delivery cannot
+// deadlock.
 type Observer interface {
 	OnEvent(Event)
 }

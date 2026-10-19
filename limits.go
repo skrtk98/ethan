@@ -30,8 +30,10 @@ type Limits struct {
 	// A model call does not start once the total has reached it, and a call
 	// that carries the total past it cancels the Run with ErrTokenLimit.
 	// Calls in flight at that moment are canceled and their usage, which the
-	// provider does not report, is not counted, so the provider may bill
-	// somewhat more than MaxTokens. Zero means unlimited.
+	// provider does not report, is not counted. Each of those calls started
+	// below the limit, so the provider may bill up to MaxConcurrency calls'
+	// worth beyond MaxTokens; lower MaxConcurrency, or set a spending limit
+	// with the provider, to bound it more tightly. Zero means unlimited.
 	MaxTokens int
 	// MaxConcurrency is the number of model calls in flight at once. Default 4.
 	MaxConcurrency int
