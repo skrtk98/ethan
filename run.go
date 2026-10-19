@@ -114,6 +114,9 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 	}
 	resp, err := mm.model.Generate(ctx, req)
 	if resp == nil {
+		if err == nil {
+			err = errors.New("ethan: model returned neither a response nor an error")
+		}
 		return nil, err
 	}
 	t, _ := ctx.Value(taskKey{}).(*Task)

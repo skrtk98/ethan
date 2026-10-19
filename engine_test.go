@@ -83,3 +83,18 @@ func TestRunFailsWhenExecutionFails(t *testing.T) {
 		t.Errorf("want failed root in result, got %+v", res)
 	}
 }
+
+// nilModel answers every call with neither a response nor an error.
+type nilModel struct{}
+
+func (nilModel) Generate(context.Context, ethan.Request) (*ethan.Response, error) { return nil, nil }
+
+func TestAModelReturningNothingFailsTheRun(t *testing.T) {
+	res, err := ethan.New(nilModel{}).Run(context.Background(), "goal")
+	if err == nil || !strings.Contains(err.Error(), "neither a response nor an error") {
+		t.Fatalf("err = %v", err)
+	}
+	if res.Root.Status != ethan.StatusFailed {
+		t.Errorf("root is %s", res.Root.Status)
+	}
+}
