@@ -11,8 +11,10 @@ import (
 
 var taskRe = regexp.MustCompile(`(?s)<task>\n(.*?)\n</task>`)
 
-// Task returns the description of the task a request is about, as the
-// default prompt templates write it, or "" if there is none.
+// Task returns the description of the task a request is about, read from
+// the prompt as the default templates write it, or "" if there is none. It
+// is a test heuristic: with other templates, or a task description holding
+// the template's tags, it may misread the prompt.
 func Task(req ethan.Request) string {
 	m := taskRe.FindStringSubmatch(Prompt(req))
 	if m == nil {
@@ -22,7 +24,7 @@ func Task(req ethan.Request) string {
 }
 
 // IsGoal reports whether a request is about the goal itself rather than one
-// of its subtasks, as the default prompt templates write it.
+// of its subtasks, read from the prompt as Task is.
 func IsGoal(req ethan.Request) bool {
 	return !strings.Contains(Prompt(req), "<ancestors>")
 }
@@ -58,7 +60,9 @@ func ByTask(handlers map[string]Handler) Handler {
 
 // Sequence answers successive requests with successive handlers, e.g. a
 // tool call and then the final text of an agent's tool loop. Requests after
-// the last handler fail. It is safe for concurrent use.
+// the last handler fail. Concurrent requests get handlers in the order they
+// arrive, which varies, so give each task its own Sequence, e.g. under
+// ByTask.
 func Sequence(handlers ...Handler) Handler {
 	var (
 		mu sync.Mutex
