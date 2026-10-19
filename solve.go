@@ -9,18 +9,16 @@ import (
 	"sync"
 )
 
-// agent returns the agent called name, or the first agent if there is none.
-func (r *run) agent(name string) Agent {
-	for _, a := range r.engine.agents {
-		if a.Name == name {
-			return a
-		}
+// agent returns the agent called name; an empty name means the first.
+func (r *run) agent(name string) (Agent, bool) {
+	if name == "" {
+		return r.engine.agents[0], true
 	}
-	return r.engine.agents[0]
-}
-
-func (r *run) knownAgent(name string) bool {
-	return slices.ContainsFunc(r.engine.agents, func(a Agent) bool { return a.Name == name })
+	i := slices.IndexFunc(r.engine.agents, func(a Agent) bool { return a.Name == name })
+	if i < 0 {
+		return Agent{}, false
+	}
+	return r.engine.agents[i], true
 }
 
 func (r *run) agentInfos() []AgentInfo {
@@ -82,7 +80,7 @@ func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []Su
 	case len(t.Plans) > 0:
 		return r.explore(ctx, t, b, t.Plans)
 	}
-	decision := "atomic"
+	var why string // why planning did not decompose the task
 	if t.Depth < r.engine.limits.MaxDepth {
 		d, err := r.planner.Plan(ctx, r.planRequest(t, b))
 		switch {
@@ -100,19 +98,23 @@ func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []Su
 				r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: strconv.Itoa(len(plans)), Plans: proposals})
 				return r.explore(ctx, t, b, plans)
 			}
-			decision = fmt.Sprintf("atomic: none of the %d proposed plans is valid", len(d.Plans))
+			why = fmt.Sprintf("none of the %d proposed plans is valid", len(d.Plans))
 		case err != nil:
-			decision = "atomic: plan: " + err.Error()
+			why = "plan: " + err.Error()
 		}
 		// A failed or unusable decision falls back to direct execution.
 	}
-	r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: decision})
+	r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: "atomic", Reason: why})
 	return r.executeLeaf(ctx, t, b)
 }
 
 func (r *run) executeLeaf(ctx context.Context, t *Task, b Brief) error {
 	t.Atomic = true
-	agent := r.agent(t.Agent)
+	// A task resumed from a journal may name an agent no longer configured.
+	agent, ok := r.agent(t.Agent)
+	if !ok {
+		return fmt.Errorf("agent %q is not one of the engine's agents", t.Agent)
+	}
 	t.Agent = agent.Name
 	m := r.model
 	if agent.Model != nil {
@@ -136,11 +138,11 @@ func (r *run) buildPlans(parent *Task, proposals []PlanProposal) []*Plan {
 		if len(valid) == r.engine.maxPlans {
 			break
 		}
-		if validProposal(pp, r.knownAgent) {
+		if validProposal(pp, func(name string) bool { _, ok := r.agent(name); return ok }) {
 			valid = append(valid, pp)
 		}
 	}
-	return newPlans(parent, valid, func(name string) string { return r.agent(name).Name })
+	return newPlans(parent, valid, func(name string) string { a, _ := r.agent(name); return a.Name })
 }
 
 // newPlans builds the Plans of parent from proposals, giving the plans and
@@ -177,7 +179,7 @@ func validProposal(pp PlanProposal, knownAgent func(string) bool) bool {
 		if _, dup := deps[s.ID]; dup {
 			return false
 		}
-		if s.Agent != "" && !knownAgent(s.Agent) {
+		if !knownAgent(s.Agent) {
 			return false
 		}
 		var ds []string
@@ -260,7 +262,7 @@ func (x *exploration) ScorePlan(ctx context.Context, p *Plan) *Score {
 	s, err := x.run.evaluator.ScorePlan(ctx, x.brief, proposalOf(p))
 	if err != nil {
 		if ctx.Err() == nil {
-			x.run.emit(Event{Kind: EventPlanScored, TaskID: x.task.ID, PlanID: p.ID, Text: err.Error()})
+			x.run.emit(Event{Kind: EventPlanScored, TaskID: x.task.ID, PlanID: p.ID, Reason: err.Error()})
 		}
 		return nil
 	}
@@ -276,7 +278,7 @@ func (x *exploration) ScoreResult(ctx context.Context, p *Plan) *Score {
 	s, err := x.run.evaluator.ScoreResult(ctx, x.brief, p.Output)
 	if err != nil {
 		if ctx.Err() == nil {
-			x.run.emit(Event{Kind: EventResultScored, TaskID: x.task.ID, PlanID: p.ID, Text: err.Error()})
+			x.run.emit(Event{Kind: EventResultScored, TaskID: x.task.ID, PlanID: p.ID, Reason: err.Error()})
 		}
 		return nil
 	}

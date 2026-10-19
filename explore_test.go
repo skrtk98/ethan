@@ -210,8 +210,8 @@ func TestInvalidPlansAreDroppedAndTaskFallsBackToDirectExecution(t *testing.T) {
 	if !res.Root.Atomic || res.Output != "out(goal)" {
 		t.Errorf("root = %+v", res.Root)
 	}
-	if e := firstEvent(res, ethan.EventTaskDecided); e.Text != "atomic: none of the 3 proposed plans is valid" {
-		t.Errorf("decision = %q", e.Text)
+	if e := firstEvent(res, ethan.EventTaskDecided); e.Text != "atomic" || e.Reason != "none of the 3 proposed plans is valid" {
+		t.Errorf("decision %q, reason %q", e.Text, e.Reason)
 	}
 }
 
@@ -222,8 +222,8 @@ func TestAFailedPlannerIsRecordedInTheDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e := firstEvent(res, ethan.EventTaskDecided); !strings.HasPrefix(e.Text, "atomic: plan: ") {
-		t.Errorf("decision = %q", e.Text)
+	if e := firstEvent(res, ethan.EventTaskDecided); e.Text != "atomic" || !strings.HasPrefix(e.Reason, "plan: ") {
+		t.Errorf("decision %q, reason %q", e.Text, e.Reason)
 	}
 }
 
@@ -239,8 +239,8 @@ func TestAFailedScoreIsRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, kind := range []ethan.EventKind{ethan.EventPlanScored, ethan.EventResultScored} {
-		if e := firstEvent(res, kind); e.Score != nil || e.Text == "" {
-			t.Errorf("%s: score %v, text %q", kind, e.Score, e.Text)
+		if e := firstEvent(res, kind); e.Score != nil || e.Reason == "" {
+			t.Errorf("%s: score %v, reason %q", kind, e.Score, e.Reason)
 		}
 	}
 }
@@ -567,5 +567,43 @@ func TestAPlanNamingAnUnknownAgentIsDropped(t *testing.T) {
 	}
 	if len(res.Root.Plans) != 1 || res.Root.Plans[0].Rationale != "known" || res.Output != "out(B)+out(C)" {
 		t.Errorf("plans %d, output %q", len(res.Root.Plans), res.Output)
+	}
+}
+
+func TestAnEmptyAgentNameMeansTheFirstAgent(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}))).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults)
+	unnamed := ethantest.New() // fails every call
+
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1}), ethan.WithAgents(
+		ethan.Agent{Name: "writer", Description: "writes"},
+		ethan.Agent{Description: "unnamed", Model: unnamed},
+	)).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := res.Root.Plans[0].Subtasks[0]; a.Agent != "writer" || len(unnamed.Calls(ethan.TagExecute)) != 0 {
+		t.Errorf("A ran on %q", a.Agent)
+	}
+}
+
+func TestResumingWithoutAPlannedAgentFails(t *testing.T) {
+	agents := []ethan.Agent{{Name: "writer", Description: "writes"}, {Name: "coder", Description: "codes", Model: ethantest.New()}}
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A", Agent: "coder"}))).
+		On(ethan.TagExecute, echoTask)
+	first, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1}), ethan.WithAgents(agents...)).Run(context.Background(), "goal")
+	if err == nil {
+		t.Fatal("first run succeeded")
+	}
+
+	_, err = ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1}), ethan.WithAgents(agents[0])).Resume(context.Background(), first.Events)
+	if err == nil || !strings.Contains(err.Error(), `agent "coder" is not one of the engine's agents`) {
+		t.Errorf("err = %v", err)
+	}
+	if len(m.Calls(ethan.TagExecute)) != 0 {
+		t.Error("A ran on another agent")
 	}
 }

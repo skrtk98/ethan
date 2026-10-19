@@ -11,16 +11,16 @@ const (
 	EventRunDone      EventKind = "run_done"
 	EventRunFailed    EventKind = "run_failed"
 	EventTaskStarted  EventKind = "task_started"
-	EventTaskDecided  EventKind = "task_decided" // Text is the number of plans, or "atomic" and why if planning failed
+	EventTaskDecided  EventKind = "task_decided" // Text is "atomic" or the number of plans
 	EventTaskDone     EventKind = "task_done"
 	EventTaskFailed   EventKind = "task_failed"
 	EventTaskPruned   EventKind = "task_pruned" // Text is why the task was not started
-	EventPlanScored   EventKind = "plan_scored" // without Score, Text is why scoring failed
+	EventPlanScored   EventKind = "plan_scored" // without Score if scoring failed
 	EventPlanStarted  EventKind = "plan_started"
 	EventPlanDone     EventKind = "plan_done"
 	EventPlanFailed   EventKind = "plan_failed"
 	EventPlanPruned   EventKind = "plan_pruned"
-	EventResultScored EventKind = "result_scored" // without Score, Text is why scoring failed
+	EventResultScored EventKind = "result_scored" // without Score if scoring failed
 	EventPlanChosen   EventKind = "plan_chosen"
 	EventNoteAdded    EventKind = "note_added"
 	EventUsage        EventKind = "usage" // a model call's usage; Text is the request's tag
@@ -37,6 +37,9 @@ type Event struct {
 	// Text carries the goal, task description, error, note or output,
 	// depending on Kind.
 	Text string `json:"text,omitempty"`
+	// Reason is why planning failed, on an atomic task_decided, or why
+	// scoring failed, on plan_scored and result_scored without a Score.
+	Reason string `json:"reason,omitempty"`
 	// Plans are the plans a task was decomposed into, on task_decided. Their
 	// subtask IDs and dependencies are the IDs of the tree.
 	Plans []PlanProposal `json:"plans,omitempty"`
