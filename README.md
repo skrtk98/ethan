@@ -111,7 +111,19 @@ engine := ethan.New(anthropic.New(), // plans, evaluates and synthesizes
 )
 ```
 
-Tools implement `Tool` (`Spec` and `Call`). Server-side tools such as web search are adapter options (`anthropic.WithWebSearch`, `openai.WithWebSearch`). The Claude adapter asks for prompt caching on every request (`anthropic.WithoutCache` turns it off); `Usage` reports cached input tokens in `CacheReadTokens` and `CacheWriteTokens`, which are part of `InputTokens`.
+Tools implement `Tool` (`Spec` and `Call`). `FuncTool` makes one from a function, deriving the input schema from its input struct with `SchemaFor`:
+
+```go
+type query struct {
+	Text string `json:"text" desc:"what to search for"`
+}
+
+search := ethan.FuncTool("search", "Searches the web.", func(ctx context.Context, q query) (string, error) {
+	return lookup(ctx, q.Text)
+})
+```
+
+Server-side tools such as web search are adapter options (`anthropic.WithWebSearch`, `openai.WithWebSearch`). The Claude adapter asks for prompt caching on every request (`anthropic.WithoutCache` turns it off); `Usage` reports cached input tokens in `CacheReadTokens` and `CacheWriteTokens`, which are part of `InputTokens`.
 
 ## Testing
 
