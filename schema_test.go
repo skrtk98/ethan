@@ -180,3 +180,16 @@ func TestFuncToolChecksItsInputAgainstTheSchema(t *testing.T) {
 		t.Errorf("valid input: %q, %v", out, err)
 	}
 }
+
+func TestSchemaForFollowsEncodingJSONForNumbersAndBadTags(t *testing.T) {
+	s, err := ethan.SchemaFor[struct {
+		N   json.Number `json:"n"`
+		Bad int         `json:"a\"b"`
+	}]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(s), `"n":{"type":"number"}`) || !strings.Contains(string(s), `"Bad":{"type":"integer"}`) {
+		t.Errorf("schema = %s", s)
+	}
+}

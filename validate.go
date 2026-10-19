@@ -39,8 +39,10 @@ func validate(s map[string]any, v any, path string) error {
 		if !ok {
 			return fmt.Errorf("%s: want a number", path)
 		}
+		// encoding/json decodes only plain digits into Go integers: 1.0
+		// and 1e0 are rejected here rather than when decoding.
 		if typ == "integer" && strings.ContainsAny(string(n), ".eE") {
-			return fmt.Errorf("%s: want an integer", path)
+			return fmt.Errorf("%s: want an integer written without a fraction or exponent", path)
 		}
 	case "array":
 		items, ok := v.([]any)

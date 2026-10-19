@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // SchemaFor returns the JSON Schema of the values of T, as encoding/json
@@ -36,13 +37,19 @@ func SchemaFor[T any]() (json.RawMessage, error) {
 	return json.Marshal(s)
 }
 
-var timeType = reflect.TypeFor[time.Time]()
+var (
+	timeType   = reflect.TypeFor[time.Time]()
+	numberType = reflect.TypeFor[json.Number]()
+)
 
 // schemaOf builds the schema of t; seen holds the struct types being built,
 // to reject recursion.
 func schemaOf(t reflect.Type, seen []reflect.Type) (map[string]any, error) {
-	if t == timeType {
+	switch t {
+	case timeType:
 		return map[string]any{"type": "string", "format": "date-time"}, nil
+	case numberType:
+		return map[string]any{"type": "number"}, nil
 	}
 	switch t.Kind() {
 	case reflect.String:
@@ -115,6 +122,9 @@ func collectFields(t reflect.Type, depth int, seen []reflect.Type, fields *[]fie
 		name, opts, _ := strings.Cut(f.Tag.Get("json"), ",")
 		if name == "-" && opts == "" {
 			continue
+		}
+		if !validTagName(name) {
+			name = "" // encoding/json ignores it
 		}
 		if f.Anonymous && name == "" {
 			ft := f.Type
@@ -199,4 +209,19 @@ func quoted(t reflect.Type, opts string) bool {
 		return true
 	}
 	return false
+}
+
+// validTagName reports whether encoding/json accepts name from a json tag.
+func validTagName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range name {
+		switch {
+		case strings.ContainsRune("!#$%&()*+-./:;<=>?@[]^_{|}~ ", c):
+		case !unicode.IsLetter(c) && !unicode.IsDigit(c):
+			return false
+		}
+	}
+	return true
 }
