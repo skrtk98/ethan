@@ -1,0 +1,9 @@
+{{define "system"}}You convert the result of a task into the requested structured form.
+Use only what the result in <result> says: do not add facts, and do not drop any the form has room for.
+Where the result does not give what a field needs, use null if the field allows it, or else an empty value.{{end}}
+{{define "user"}}<goal>
+{{.Goal}}
+</goal>
+<result>
+{{.Result}}
+</result>{{end}}

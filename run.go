@@ -47,7 +47,7 @@ func (r *run) finish(ctx context.Context, root *Task, err error) (*Result, error
 	if err != nil {
 		r.emit(Event{Kind: EventRunFailed, Text: err.Error(), Usage: &usage})
 	} else {
-		r.emit(Event{Kind: EventRunDone, Usage: &usage})
+		r.emit(Event{Kind: EventRunDone, Usage: &usage, Value: r.value})
 	}
 	r.emitMu.Lock()
 	if err == nil && r.journalErr != nil {
@@ -55,7 +55,7 @@ func (r *run) finish(ctx context.Context, root *Task, err error) (*Result, error
 	}
 	events := r.events
 	r.emitMu.Unlock()
-	res := &Result{Goal: r.goal, Output: root.Output, Score: root.Score, Root: root, Usage: usage,
+	res := &Result{Goal: r.goal, Output: root.Output, Value: r.value, Score: root.Score, Root: root, Usage: usage,
 		Notes: r.board.Notes(), Events: events}
 	if err != nil {
 		res.Error = err.Error()
@@ -79,6 +79,9 @@ type run struct {
 	events     []Event
 	journal    Journal
 	journalErr error
+
+	into  *into
+	value json.RawMessage // the output converted as into asks
 
 	mu      sync.Mutex
 	prior   Usage // spent by the runs this one resumes
@@ -232,4 +235,15 @@ func (t noteTool) Call(_ context.Context, input json.RawMessage) (string, error)
 	}
 	t.post(t.author, in.Text)
 	return "noted", nil
+}
+
+// solveGoal solves root, the goal, and converts its output if Into asked.
+func (r *run) solveGoal(ctx context.Context, root *Task) error {
+	if r.into != nil && r.into.err != nil {
+		return r.into.err
+	}
+	if err := r.start(ctx, root, nil, nil); err != nil {
+		return err
+	}
+	return r.convert(ctx, root)
 }

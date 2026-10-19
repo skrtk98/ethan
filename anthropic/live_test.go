@@ -47,3 +47,26 @@ func TestLivePromptCaching(t *testing.T) {
 		t.Error("the second call read nothing from the cache")
 	}
 }
+
+// answer exercises the shapes SchemaFor emits: nested objects, arrays and
+// nullable pointers.
+type answer struct {
+	Product int               `json:"product" desc:"the product"`
+	Factors []int             `json:"factors"`
+	Note    *string           `json:"note" desc:"null unless there is a caveat"`
+	Check   struct{ OK bool } `json:"check"`
+}
+
+// TestLiveInto checks that the provider accepts the strict schema of Into.
+func TestLiveInto(t *testing.T) {
+	var got answer
+	res, err := ethan.New(anthropic.New(), ethan.WithLimits(ethan.Limits{MaxDepth: 1, MaxTokens: 100_000})).
+		Run(context.Background(), "What is 17 * 23? Answer with the number only.", ethan.Into(&got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Product != 391 {
+		t.Errorf("value = %s", res.Value)
+	}
+	t.Logf("value: %s, usage: %+v", res.Value, res.Usage)
+}

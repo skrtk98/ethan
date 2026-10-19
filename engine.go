@@ -111,6 +111,8 @@ func New(m Model, opts ...Option) *Engine {
 type Result struct {
 	Goal   string `json:"goal"`
 	Output string `json:"output"`
+	// Value is the output converted as Into asked, if it did.
+	Value json.RawMessage `json:"value,omitempty"`
 	// Score is the evaluation of the root output, if it was evaluated.
 	Score *Score `json:"score,omitempty"`
 	// Error is the Run's error message, if it failed.
@@ -137,7 +139,7 @@ func (e *Engine) Run(ctx context.Context, goal string, opts ...RunOption) (*Resu
 	r := e.newRun(goal, cancel, opts)
 	root := &Task{ID: "t0", Description: goal, Agent: e.agents[0].Name, Status: StatusPending}
 	r.emit(Event{Kind: EventRunStarted, Text: goal, Agent: root.Agent})
-	return r.finish(ctx, root, r.start(ctx, root, nil, nil))
+	return r.finish(ctx, root, r.solveGoal(ctx, root))
 }
 
 // Resume continues the run recorded in events, as read from its journal
@@ -161,8 +163,9 @@ func (e *Engine) Resume(ctx context.Context, events []Event, opts ...RunOption) 
 	r.prior = s.usage()
 	r.board.notes = s.notes
 	r.events = slices.Clone(events)
+	r.value = s.value
 	r.emit(Event{Kind: EventRunResumed})
-	return r.finish(ctx, root, r.start(ctx, root, nil, nil))
+	return r.finish(ctx, root, r.solveGoal(ctx, root))
 }
 
 // RunOption configures one Run or Resume.

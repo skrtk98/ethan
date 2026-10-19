@@ -13,7 +13,8 @@ var promptFS embed.FS
 var promptFuncs = template.FuncMap{"join": strings.Join}
 
 // DefaultTemplate returns a fresh copy of a built-in prompt template:
-// "plan", "execute", "score_plan", "score_result" or "synthesize".
+// "plan", "execute", "score_plan", "score_result", "synthesize" or
+// "format".
 // Every template defines "system" and "user"; to customize a prompt,
 // redefine either of them on the returned template and pass it to the
 // corresponding component.

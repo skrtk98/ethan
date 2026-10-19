@@ -24,6 +24,7 @@ const (
 	TagScorePlan   = "score_plan"
 	TagScoreResult = "score_result"
 	TagSynthesize  = "synthesize"
+	TagFormat      = "format" // converts the goal's output for Into
 )
 
 // Request is a single model invocation.

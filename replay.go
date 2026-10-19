@@ -13,7 +13,7 @@ func Replay(events []Event) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Result{Goal: s.root.Description, Output: s.root.Output, Score: s.root.Score, Error: s.err,
+	return &Result{Goal: s.root.Description, Output: s.root.Output, Value: s.value, Score: s.root.Score, Error: s.err,
 		Root: s.root, Usage: s.usage(), Notes: s.notes, Events: events}, nil
 }
 
@@ -22,6 +22,7 @@ type replayed struct {
 	root  *Task
 	notes []Note
 	err   string // the last run's error, if it failed
+	value []byte // the output converted for Into, if the last run did
 	total Usage  // of every model call journaled
 }
 
@@ -51,9 +52,9 @@ func replay(events []Event) (*replayed, error) {
 		}
 		switch e.Kind {
 		case EventRunDone:
-			s.err = ""
+			s.err, s.value = "", e.Value
 		case EventRunFailed:
-			s.err = e.Text
+			s.err, s.value = e.Text, nil
 		case EventTaskStarted:
 			t.Status = StatusRunning
 		case EventTaskDecided:

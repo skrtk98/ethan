@@ -60,6 +60,18 @@ func main() {
 }
 ```
 
+To receive the result as a Go value, pass `Into`. The exploration still works in text; once it finishes, one more model call converts the output with the schema `SchemaFor` derives from the type:
+
+```go
+var report struct {
+	Summary string   `json:"summary"`
+	Sources []string `json:"sources" desc:"URLs the summary relies on"`
+}
+res, err := engine.Run(ctx, goal, ethan.Into(&report))
+```
+
+The value is journaled too, so `Replay` and `Resume` keep it; a Resume after a failed conversion only converts again.
+
 ## Research demo
 
 [`examples/research`](examples/research) runs a web-searching researcher agent and an analyst agent on a question:

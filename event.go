@@ -1,6 +1,9 @@
 package ethan
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // EventKind classifies an Event.
 type EventKind string
@@ -43,6 +46,8 @@ type Event struct {
 	// Plans are the plans a task was decomposed into, on task_decided. Their
 	// subtask IDs and dependencies are the IDs of the tree.
 	Plans []PlanProposal `json:"plans,omitempty"`
+	// Value is the output converted as Into asked, on run_done.
+	Value json.RawMessage `json:"value,omitempty"`
 	// Agent is the root task's agent, on run_started.
 	Agent string `json:"agent,omitempty"`
 	// Usage is the tokens used by one model call made for the task, on
