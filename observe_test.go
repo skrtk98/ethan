@@ -52,7 +52,7 @@ func TestSubtasksRunOnTheirAssignedAgent(t *testing.T) {
 		On(ethan.TagPlan, decomposeRoot(plan("p",
 			sub{ID: "a", Description: "A", Agent: "writer"},
 			sub{ID: "b", Description: "B", Agent: "coder"},
-			sub{ID: "c", Description: "C", Agent: "nobody"},
+			sub{ID: "c", Description: "C"},
 		))).
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults)

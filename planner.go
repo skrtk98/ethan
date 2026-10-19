@@ -43,7 +43,8 @@ type PlanProposal struct {
 }
 
 // SubtaskProposal is one subtask of a PlanProposal. ID is local to the plan
-// and is what DependsOn refers to.
+// and is what DependsOn refers to. Agent names one of the Engine's agents;
+// empty means the first. A plan naming an unknown agent is dropped.
 type SubtaskProposal struct {
 	ID          string   `json:"id"`
 	Description string   `json:"description"`

@@ -9,6 +9,7 @@ import (
 	"sync"
 )
 
+// agent returns the agent called name, or the first agent if there is none.
 func (r *run) agent(name string) Agent {
 	for _, a := range r.engine.agents {
 		if a.Name == name {
@@ -16,6 +17,10 @@ func (r *run) agent(name string) Agent {
 		}
 	}
 	return r.engine.agents[0]
+}
+
+func (r *run) knownAgent(name string) bool {
+	return slices.ContainsFunc(r.engine.agents, func(a Agent) bool { return a.Name == name })
 }
 
 func (r *run) agentInfos() []AgentInfo {
@@ -123,14 +128,15 @@ func (r *run) executeLeaf(ctx context.Context, t *Task, b Brief) error {
 }
 
 // buildPlans turns valid proposals into Plans under parent. Proposals with
-// no subtasks, duplicate or dangling ids, or dependency cycles are dropped.
+// no subtasks, duplicate or dangling ids, dependency cycles or unknown
+// agents are dropped.
 func (r *run) buildPlans(parent *Task, proposals []PlanProposal) []*Plan {
 	var valid []PlanProposal
 	for _, pp := range proposals {
 		if len(valid) == r.engine.maxPlans {
 			break
 		}
-		if validProposal(pp) {
+		if validProposal(pp, r.knownAgent) {
 			valid = append(valid, pp)
 		}
 	}
@@ -162,13 +168,16 @@ func newPlans(parent *Task, proposals []PlanProposal, agent func(string) string)
 	return plans
 }
 
-func validProposal(pp PlanProposal) bool {
+func validProposal(pp PlanProposal, knownAgent func(string) bool) bool {
 	if len(pp.Subtasks) == 0 {
 		return false
 	}
 	deps := make(map[string][]string, len(pp.Subtasks))
 	for _, s := range pp.Subtasks {
 		if _, dup := deps[s.ID]; dup {
+			return false
+		}
+		if s.Agent != "" && !knownAgent(s.Agent) {
 			return false
 		}
 		var ds []string

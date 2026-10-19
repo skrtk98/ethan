@@ -551,3 +551,21 @@ func TestMaxPlansBelowOneMeansTheDefault(t *testing.T) {
 		}
 	}
 }
+
+func TestAPlanNamingAnUnknownAgentIsDropped(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(
+			plan("typo", sub{ID: "a", Description: "A", Agent: "reseacher"}),
+			plan("known", sub{ID: "a", Description: "B", Agent: ethan.DefaultAgent.Name}, sub{ID: "b", Description: "C"}),
+		)).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagSynthesize, joinResults)
+
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1})).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Root.Plans) != 1 || res.Root.Plans[0].Rationale != "known" || res.Output != "out(B)+out(C)" {
+		t.Errorf("plans %d, output %q", len(res.Root.Plans), res.Output)
+	}
+}
