@@ -21,7 +21,11 @@ var (
 // Zero fields take their defaults.
 type Limits struct {
 	// MaxDepth is the depth at which tasks are no longer decomposed but
-	// executed directly. Default 2.
+	// executed directly. The goal is at depth 0, so 1 lets the planner split
+	// the goal once into subtasks that are executed directly. Below MaxDepth
+	// the planner may still choose to execute a task directly. Default 2.
+	// There is no setting that turns decomposition off: a single model call
+	// does not need ethan.
 	MaxDepth int
 	// MaxTasks is the number of tasks, leaves included, a Run may start.
 	// Starting one more cancels the Run with ErrTaskLimit. Default 40.
