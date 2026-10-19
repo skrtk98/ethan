@@ -313,6 +313,9 @@ func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *P
 	for _, st := range p.Subtasks {
 		wg.Go(func() {
 			defer close(done[st.ID])
+			if st.Status == StatusDone {
+				return // finished in an earlier run
+			}
 			var inputs []SubtaskResult
 			for _, d := range st.DependsOn {
 				<-done[d] // every subtask closes its channel, even when skipped

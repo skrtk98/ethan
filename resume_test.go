@@ -336,3 +336,37 @@ func TestNoToolRunsAfterACancelBetweenTools(t *testing.T) {
 		t.Errorf("notes = %v", res.Notes)
 	}
 }
+
+func TestResumeNeverPrunesAFinishedSubtask(t *testing.T) {
+	// The first run finishes A, then B fails.
+	aDone := make(chan struct{})
+	var once sync.Once
+	m := ethantest.New().
+		On(ethan.TagPlan, decomposeRoot(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			if taskOf(req) == "B" {
+				<-aDone
+				return nil, errors.New("B failed")
+			}
+			return echoTask(req)
+		})
+	first, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1}), ethan.WithObserver(ethan.ObserverFunc(func(e ethan.Event) {
+		if e.Kind == ethan.EventTaskDone && e.TaskID == "t0.p1.t1" {
+			once.Do(func() { close(aDone) })
+		}
+	}))).Run(context.Background(), "goal")
+	if err == nil {
+		t.Fatal("first run succeeded")
+	}
+
+	// On resume B fails at once, canceling its siblings; A must stay done.
+	for range 100 {
+		res, err := ethan.New(ethantest.New(), ethan.WithLimits(ethan.Limits{MaxDepth: 1, MaxTasks: 1})).Resume(context.Background(), first.Events)
+		if !errors.Is(err, ethan.ErrTaskLimit) {
+			t.Fatalf("err = %v, want ErrTaskLimit", err)
+		}
+		if a := res.Root.Plans[0].Subtasks[0]; a.Status != ethan.StatusDone || a.Output != "out(A)" {
+			t.Fatalf("A is %s (%s) after the resume", a.Status, a.Error)
+		}
+	}
+}
