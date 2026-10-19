@@ -90,3 +90,93 @@ func TestFuncToolPanicsOnANonStructInput(t *testing.T) {
 	}()
 	ethan.FuncTool("bad", "", func(context.Context, string) (string, error) { return "", nil })
 }
+
+type left struct {
+	Name string `json:"name"`
+	Kept int
+}
+
+type right struct {
+	Name string
+	Kept int
+}
+
+func TestSchemaForResolvesEmbeddedNamesLikeEncodingJSON(t *testing.T) {
+	type pair struct {
+		left
+		right
+	}
+	type shallow struct {
+		left
+		Kept string
+	}
+	type taggedKept struct {
+		Kept string `json:"Kept"`
+	}
+	type tagged struct {
+		taggedKept
+		right
+	}
+	type recursive struct {
+		*recursive
+		N int
+	}
+	// Kept is untagged on both sides at the same depth.
+	if _, err := ethan.SchemaFor[pair](); err == nil || !strings.Contains(err.Error(), "ambiguous field Kept") {
+		t.Errorf("pair: err = %v", err)
+	}
+	s, err := ethan.SchemaFor[shallow]()
+	if err != nil || !strings.Contains(string(s), `"Kept":{"type":"string"}`) || !strings.Contains(string(s), `"name":{"type":"string"}`) {
+		t.Errorf("shallow: %s, %v", s, err)
+	}
+	// At the same depth the tagged Kept wins.
+	if s, err := ethan.SchemaFor[tagged](); err != nil || !strings.Contains(string(s), `"Kept":{"type":"string"}`) {
+		t.Errorf("tagged: %s, %v", s, err)
+	}
+	if _, err := ethan.SchemaFor[recursive](); err == nil {
+		t.Error("recursive embedding accepted")
+	}
+}
+
+func TestSchemaForMatchesEncodingJSONEncodings(t *testing.T) {
+	s, err := ethan.SchemaFor[struct {
+		Fixed [2]byte `json:"fixed"`
+		Bytes []byte  `json:"bytes"`
+		N     *int    `json:"n,string"`
+	}]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"fixed":{"items":{"type":"integer"},"type":"array"}`,
+		`"bytes":{"description":"base64-encoded bytes","type":"string"}`,
+		`"n":{"anyOf":[{"type":"string"},{"type":"null"}]}`,
+	} {
+		if !strings.Contains(string(s), want) {
+			t.Errorf("schema %s lacks %s", s, want)
+		}
+	}
+}
+
+func TestFuncToolChecksItsInputAgainstTheSchema(t *testing.T) {
+	called := false
+	tool := ethan.FuncTool("transfer", "", func(context.Context, struct {
+		To     string  `json:"to"`
+		Amount int     `json:"amount"`
+		Memo   *string `json:"memo"`
+	}) (string, error) {
+		called = true
+		return "ok", nil
+	})
+	for _, input := range []string{`null`, `{}`, `{"to":"a","amount":1}`, `{"to":"a","amount":1.5,"memo":null}`, `{"to":1,"amount":1,"memo":null}`} {
+		if _, err := tool.Call(context.Background(), json.RawMessage(input)); err == nil {
+			t.Errorf("%s accepted", input)
+		}
+	}
+	if called {
+		t.Error("fn ran on invalid input")
+	}
+	if out, err := tool.Call(context.Background(), json.RawMessage(`{"to":"a","amount":1,"memo":null}`)); err != nil || out != "ok" {
+		t.Errorf("valid input: %q, %v", out, err)
+	}
+}

@@ -1,6 +1,7 @@
 package ethan
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -24,7 +25,9 @@ import (
 //
 // Structs, strings, booleans, numbers, slices, arrays, pointers and
 // time.Time are supported. Maps, interfaces and recursive types are not,
-// since a strict schema cannot describe them.
+// since a strict schema cannot describe them, and neither are field names
+// that embedded structs make ambiguous. The length of an array is not in
+// the schema, as not every provider supports length constraints.
 func SchemaFor[T any]() (json.RawMessage, error) {
 	s, err := schemaOf(reflect.TypeFor[T](), nil)
 	if err != nil {
@@ -56,30 +59,36 @@ func schemaOf(t reflect.Type, seen []reflect.Type) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"anyOf": []any{s, map[string]any{"type": "null"}}}, nil
+		return nullable(s), nil
 	case reflect.Slice, reflect.Array:
-		if t.Elem().Kind() == reflect.Uint8 {
-			return map[string]any{"type": "string", "contentEncoding": "base64"}, nil
+		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+			return map[string]any{"type": "string", "description": "base64-encoded bytes"}, nil
 		}
 		items, err := schemaOf(t.Elem(), seen)
 		if err != nil {
 			return nil, err
 		}
-		s := map[string]any{"type": "array", "items": items}
-		if t.Kind() == reflect.Array {
-			s["minItems"], s["maxItems"] = t.Len(), t.Len()
-		}
-		return s, nil
+		return map[string]any{"type": "array", "items": items}, nil
 	case reflect.Struct:
-		for _, st := range seen {
-			if st == t {
-				return nil, fmt.Errorf("recursive type %v", t)
-			}
+		if slices.Contains(seen, t) {
+			return nil, fmt.Errorf("recursive type %v", t)
+		}
+		var all []field
+		if err := collectFields(t, 0, append(seen, t), &all); err != nil {
+			return nil, err
 		}
 		props := map[string]any{}
 		required := []string{}
-		if err := addFields(t, append(seen, t), props, &required); err != nil {
-			return nil, err
+		for _, f := range all {
+			if _, done := props[f.name]; done {
+				continue
+			}
+			win, err := dominant(f.name, all)
+			if err != nil {
+				return nil, fmt.Errorf("%v: %w", t, err)
+			}
+			props[f.name] = win.schema
+			required = append(required, f.name)
 		}
 		return map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}, nil
 	default:
@@ -87,9 +96,21 @@ func schemaOf(t reflect.Type, seen []reflect.Type) (map[string]any, error) {
 	}
 }
 
-// addFields adds the fields of struct t to props, flattening embedded
-// structs as encoding/json does.
-func addFields(t reflect.Type, seen []reflect.Type, props map[string]any, required *[]string) error {
+func nullable(s map[string]any) map[string]any {
+	return map[string]any{"anyOf": []any{s, map[string]any{"type": "null"}}}
+}
+
+// field is a candidate JSON property of a struct.
+type field struct {
+	name   string
+	depth  int  // of embedding
+	tagged bool // named by a json tag
+	schema map[string]any
+}
+
+// collectFields appends the candidate properties of struct t, at embedding
+// depth, to fields, flattening embedded structs as encoding/json does.
+func collectFields(t reflect.Type, depth int, seen []reflect.Type, fields *[]field) error {
 	for f := range t.Fields() {
 		name, opts, _ := strings.Cut(f.Tag.Get("json"), ",")
 		if name == "-" && opts == "" {
@@ -101,7 +122,10 @@ func addFields(t reflect.Type, seen []reflect.Type, props map[string]any, requir
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
-				if err := addFields(ft, seen, props, required); err != nil {
+				if slices.Contains(seen, ft) {
+					return fmt.Errorf("recursive type %v", ft)
+				}
+				if err := collectFields(ft, depth+1, append(seen, ft), fields); err != nil {
 					return err
 				}
 				continue
@@ -110,23 +134,69 @@ func addFields(t reflect.Type, seen []reflect.Type, props map[string]any, requir
 		if !f.IsExported() {
 			continue
 		}
-		if name == "" {
-			name = f.Name
-		}
 		s, err := schemaOf(f.Type, seen)
 		if err != nil {
 			return fmt.Errorf("field %s: %w", f.Name, err)
 		}
-		if slices.Contains(strings.Split(opts, ","), "string") && (s["type"] == "integer" || s["type"] == "number" || s["type"] == "boolean") {
-			s = map[string]any{"type": "string"} // encoded as a JSON string
+		if quoted(f.Type, opts) {
+			s = map[string]any{"type": "string"} // the value inside a JSON string
+			if f.Type.Kind() == reflect.Pointer {
+				s = nullable(s)
+			}
 		}
 		if desc := f.Tag.Get("desc"); desc != "" {
 			s["description"] = desc
 		}
-		if _, dup := props[name]; !dup {
-			*required = append(*required, name)
-		}
-		props[name] = s
+		*fields = append(*fields, field{name: cmp.Or(name, f.Name), depth: depth, tagged: name != "", schema: s})
 	}
 	return nil
+}
+
+// dominant picks the field encoding/json uses for name: the shallowest, and
+// among those the one named by a tag. Where encoding/json would drop the
+// name as ambiguous, it is an error.
+func dominant(name string, fields []field) (field, error) {
+	var cands []field
+	for _, f := range fields {
+		if f.name != name {
+			continue
+		}
+		switch {
+		case len(cands) == 0 || f.depth < cands[0].depth:
+			cands = []field{f}
+		case f.depth == cands[0].depth:
+			cands = append(cands, f)
+		}
+	}
+	if len(cands) > 1 {
+		var tagged []field
+		for _, f := range cands {
+			if f.tagged {
+				tagged = append(tagged, f)
+			}
+		}
+		if len(tagged) != 1 {
+			return field{}, fmt.Errorf("ambiguous field %s", name)
+		}
+		cands = tagged
+	}
+	return cands[0], nil
+}
+
+// quoted reports whether encoding/json writes a field of type t with the
+// json options opts as a JSON string holding its value.
+func quoted(t reflect.Type, opts string) bool {
+	if !slices.Contains(strings.Split(opts, ","), "string") {
+		return false
+	}
+	if t.Name() == "" && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	}
+	return false
 }

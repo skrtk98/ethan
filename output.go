@@ -16,24 +16,39 @@ import (
 // The value is journaled. Resuming a finished run reuses it if it still
 // decodes into T, and converts the output again otherwise; resuming a run
 // whose conversion failed only converts.
-func Into[T any](v *T) RunOption {
+func Into[T any](value *T) RunOption {
 	return func(r *run) {
-		o := &into{decode: func(raw json.RawMessage) error {
-			var t T
-			dec := json.NewDecoder(bytes.NewReader(raw))
-			dec.DisallowUnknownFields()
-			if err := dec.Decode(&t); err != nil {
-				return err
+		o := &into{}
+		t := reflect.TypeFor[T]()
+		s, err := schemaOf(t, nil)
+		switch {
+		case t.Kind() != reflect.Struct:
+			o.err = fmt.Errorf("ethan: Into: %v is not a struct", t)
+		case err != nil:
+			o.err = fmt.Errorf("ethan: Into: schema of %v: %w", t, err)
+		default:
+			raw, err := json.Marshal(s)
+			if err != nil {
+				panic(err)
 			}
-			*v = t
-			return nil
-		}}
-		if k := reflect.TypeFor[T]().Kind(); k != reflect.Struct {
-			o.err = fmt.Errorf("ethan: Into: %v is not a struct", reflect.TypeFor[T]())
-		} else if schema, err := SchemaFor[T](); err != nil {
-			o.err = fmt.Errorf("ethan: Into: %w", err)
-		} else {
-			o.schema = &OutputSchema{Name: "result", Description: "The result of the goal.", Schema: schema}
+			o.schema = &OutputSchema{Name: "result", Description: "The result of the goal.", Schema: raw}
+			o.decode = func(raw json.RawMessage) error {
+				var v any
+				dec := json.NewDecoder(bytes.NewReader(raw))
+				dec.UseNumber()
+				if err := dec.Decode(&v); err != nil {
+					return err
+				}
+				if err := validate(s, v, "value"); err != nil {
+					return err
+				}
+				var t T
+				if err := json.Unmarshal(raw, &t); err != nil {
+					return err
+				}
+				*value = t
+				return nil
+			}
 		}
 		r.into = o
 	}
