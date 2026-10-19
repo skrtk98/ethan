@@ -75,7 +75,8 @@ func WithNotesInPrompt(n int) Option {
 	return func(e *Engine) { e.notesInPrompt = n }
 }
 
-// WithMaxPlans sets how many alternative plans the planner may propose. Default 3.
+// WithMaxPlans sets how many alternative plans the planner may propose.
+// Default 3, also used when n < 1.
 func WithMaxPlans(n int) Option {
 	return func(e *Engine) { e.maxPlans = n }
 }
@@ -98,6 +99,9 @@ func New(m Model, opts ...Option) *Engine {
 	}
 	if e.executeTemplate == nil {
 		e.executeTemplate = DefaultTemplate("execute")
+	}
+	if e.maxPlans < 1 {
+		e.maxPlans = 3
 	}
 	e.limits = e.limits.withDefaults()
 	return e

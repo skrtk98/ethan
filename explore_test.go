@@ -488,3 +488,23 @@ func TestARepeatedDependencyCountsOnce(t *testing.T) {
 		t.Errorf("B depends on %v", b.DependsOn)
 	}
 }
+
+func TestMaxPlansBelowOneMeansTheDefault(t *testing.T) {
+	var proposals []ethan.PlanProposal
+	for _, id := range []string{"1", "2", "3", "4"} {
+		proposals = append(proposals, plan(id, sub{ID: "a", Description: "A" + id}))
+	}
+	for _, n := range []int{0, -1} {
+		m := ethantest.New().
+			On(ethan.TagPlan, decomposeRoot(proposals...)).
+			On(ethan.TagExecute, echoTask).
+			On(ethan.TagSynthesize, joinResults)
+		res, err := ethan.New(m, ethan.WithMaxPlans(n), ethan.WithLimits(ethan.Limits{MaxDepth: 1})).Run(context.Background(), "goal")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Root.Plans) != 3 {
+			t.Errorf("WithMaxPlans(%d): %d plans, want the default 3", n, len(res.Root.Plans))
+		}
+	}
+}
