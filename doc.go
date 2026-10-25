@@ -16,6 +16,14 @@
 // as an Event. A Journal records the events, from which Replay rebuilds the
 // explored tree and Engine.Resume continues a Run that stopped.
 //
+// An Engine is safe for concurrent Runs. It calls Models, Tools and the
+// Planner, Evaluator, Synthesizer and Strategy concurrently, so they must be
+// safe for concurrent use.
+//
+// The package is at v0: its API may change between minor versions. The
+// form of journaled events is versioned separately by JournalFormat, and
+// event kinds, statuses and fields may be added within a format.
+//
 // The package depends only on the standard library and calls models
 // through the Model interface. Adapters for providers are modules of their
 // own: github.com/skrtk98/ethan/anthropic and github.com/skrtk98/ethan/openai.

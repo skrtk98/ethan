@@ -17,7 +17,7 @@ ethan is for exploratory tasks: tasks whose decomposition is not known in advanc
 
 Fixed workflows, chat with tools, and approval at fixed steps are out of scope: write them in plain Go, calling `Run` as one step if needed. See [ADR 0007](docs/adr/0007-scope.md).
 
-> Status: experimental. The API may change.
+> Status: v0. The API may still change between minor versions; [CHANGELOG.md](CHANGELOG.md) lists what changed. Journals are versioned separately (see below).
 
 ## Install
 
@@ -97,7 +97,20 @@ if errors.Is(err, ethan.ErrLimitExceeded) {
 }
 ```
 
-A journal holds one run and the resumes that continue it. The first event records the journal's format; `Replay` and `Resume` reject a journal written in a format other than `JournalFormat`, with an error wrapping `ErrJournalFormat`. `ethan.Replay(events)` rebuilds the `Result` of a journal without calling any model. The research demo takes `-journal run.jsonl` and `-resume`.
+A journal holds one run and the resumes that continue it. `ethan.Replay(events)` rebuilds the `Result` of a journal without calling any model. The research demo takes `-journal run.jsonl` and `-resume`.
+
+The first event records the journal's format. `Replay` and `Resume` reject a journal written in a format other than `JournalFormat` with an error wrapping `ErrJournalFormat`, and events that do not describe a run with `ErrInvalidJournal`. A failed run ends with a `run_failed` event whose `Code` (`"token_limit"`, `"task_limit"`, `"canceled"`, ...) tells whether resuming makes sense without parsing the message.
+
+## Observing
+
+Every step is an `Event`, delivered in journal order. `WithObserver` registers an observer for every run of an engine, which must then be safe for concurrent use if runs overlap; `ObserveWith` registers one for a single run:
+
+```go
+progress := ethan.ObserverFunc(func(e ethan.Event) { log.Println(e.Kind, e.TaskID, e.Error) })
+res, err := engine.Run(ctx, goal, ethan.ObserveWith(progress))
+```
+
+`Result.WriteTrace` writes the explored tree, events included, as JSON for inspection. Unlike the journal, its form is not versioned.
 
 ## Customizing
 
@@ -111,6 +124,10 @@ A journal holds one run and the resumes that continue it. The first event record
 | Agents        | `Agent`       | one generalist                         | `WithAgents`        |
 | Observer      | `Observer`    | none                                   | `WithObserver`      |
 | Journal       | `Journal`     | none (`FileJournal` for files)         | `JournalTo` (per run) |
+
+The default beam runs two plans in parallel at the root, so a run costs roughly twice what one plan would; `WithStrategy(ethan.BeamStrategy{Width: 1})` trades that for less exploration. Every model call, those of your own `LLMPlanner` and agents' models included, counts against the run's limits.
+
+A `Model` reports a response cut off at the output limit with an error wrapping `ethan.ErrTruncated`, and a refusal with `ethan.ErrRefused`; the engine never takes either for an answer.
 
 Prompts are embedded Go templates. `ethan.DefaultTemplate(name)` returns a copy you can modify and pass to `ethan.WithTemplate(name, t)`; its documentation lists the data each template receives.
 
@@ -136,6 +153,8 @@ search := ethan.FuncTool("search", "Searches the web.", func(ctx context.Context
 	return lookup(ctx, q.Text)
 })
 ```
+
+`New` panics on misconfigured agents: repeated names, and tools that are nil, unnamed, repeated or named `note`, which the engine adds for the blackboard. A tool that returns an error or panics fails that call only; the model sees the error as the tool's result.
 
 Server-side tools such as web search are adapter options (`anthropic.WithWebSearch`, `openai.WithWebSearch`). The Claude adapter asks for prompt caching on every request (`anthropic.WithoutCache` turns it off); `Usage` reports cached input tokens in `CacheReadTokens` and `CacheWriteTokens`, which are part of `InputTokens`.
 
@@ -166,6 +185,10 @@ go test -race ./...                       # the core module
 ```
 
 `ethantest.TestModel` checks that a model adapter maps requests and responses faithfully; each adapter runs it against a fake of its provider's API.
+
+## Security
+
+Task descriptions, tool results and blackboard notes go into prompts as they are, so a web page or document an agent reads can try to steer it (prompt injection). Give agents only the tools their tasks need, and check inputs of tools with side effects in the tool itself. Condition-based human approval of tool calls is planned ([ADR 0007](docs/adr/0007-scope.md)).
 
 ## Documentation
 
