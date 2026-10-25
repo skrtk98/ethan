@@ -23,11 +23,12 @@ Fixed workflows, chat with tools, and approval at fixed steps are out of scope: 
 
 ```sh
 go get github.com/skrtk98/ethan
+go get github.com/skrtk98/ethan/anthropic   # or /openai
 ```
 
-Requires Go 1.26 or later. The core package depends only on the standard library. Model adapters live in their own packages:
+Requires Go 1.26 or later. The core module depends only on the standard library. Each model adapter is a module of its own, so you only download the SDK of the provider you use:
 
-| Provider | Package | Notes |
+| Provider | Module | Notes |
 |---|---|---|
 | Claude | `github.com/skrtk98/ethan/anthropic` | reads `ANTHROPIC_API_KEY` |
 | OpenAI | `github.com/skrtk98/ethan/openai` | Responses API; reads `OPENAI_API_KEY` |
@@ -78,10 +79,11 @@ The value is journaled too, so `Replay` and `Resume` keep it; a Resume after a f
 
 ```sh
 export ANTHROPIC_API_KEY=...
-go run ./examples/research -o report.md -trace trace.json "What changed in Go's generics between 1.18 and 1.26?"
+cd examples
+go run ./research -o report.md -trace trace.json "What changed in Go's generics between 1.18 and 1.26?"
 ```
 
-Add `-provider openai` to use OpenAI, or `-provider ollama` to use a local Ollama server (without web search). Progress is printed to stderr. `trace.json` contains the whole explored tree, including the rejected plans, scores, notes, events and token usage. Run `go run ./examples/research -h` for the limit and model flags.
+Add `-provider openai` to use OpenAI, or `-provider ollama` to use a local Ollama server (without web search). Progress is printed to stderr. `trace.json` contains the whole explored tree, including the rejected plans, scores, notes, events and token usage. Run `go run ./research -h` in `examples` for the limit and model flags.
 
 ## Journal and resume
 
@@ -157,8 +159,10 @@ m := ethantest.New().
 ```
 
 ```sh
-go test -race ./...
-go test -tags live ./anthropic ./openai   # calls the real APIs; OLLAMA_MODEL=gpt-oss:20b adds Ollama
+go test -race ./...                       # the core module
+(cd anthropic && go test -race ./...)     # each adapter is a module of its own
+(cd openai && go test -race ./...)
+(cd anthropic && go test -tags live .)    # calls the real API; likewise in openai, where OLLAMA_MODEL=gpt-oss:20b adds Ollama
 ```
 
 `ethantest.TestModel` checks that a model adapter maps requests and responses faithfully; each adapter runs it against a fake of its provider's API.

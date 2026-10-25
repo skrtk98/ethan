@@ -1,12 +1,12 @@
 // Command research explores a research question with E.T.H.A.N. and Claude
-// and writes a report.
+// and writes a report. Run it in the examples module:
 //
-//	go run ./examples/research -o report.md -journal run.jsonl "question"
+//	go run ./research -o report.md -journal run.jsonl "question"
 //
 // A run that stops, for a limit or otherwise, can be continued from its
 // journal:
 //
-//	go run ./examples/research -o report.md -journal run.jsonl -resume
+//	go run ./research -o report.md -journal run.jsonl -resume
 //
 // -provider selects Claude (anthropic, the default), OpenAI (openai) or a
 // local Ollama server (ollama, without web search).
