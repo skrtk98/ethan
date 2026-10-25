@@ -133,6 +133,9 @@ func replay(events []Event) (*replayed, error) {
 		case EventResultScored:
 			p.ResultScore = e.Score
 		case EventPlanChosen:
+			if p.Status != StatusDone {
+				return nil, invalid("plan %s is chosen without having finished", p.ID)
+			}
 			// The choice finishes the task, even if the run stopped before
 			// recording it done.
 			t.Chosen, t.Output, t.Score, t.Status, t.Error = p.ID, p.Output, p.ResultScore, StatusDone, ""

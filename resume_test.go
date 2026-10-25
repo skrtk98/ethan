@@ -161,11 +161,12 @@ func TestReplayRejectsMalformedEventsWithoutPanicking(t *testing.T) {
 	decided := ethan.Event{Kind: ethan.EventTaskDecided, TaskID: "t0", Plans: []ethan.PlanProposal{{Subtasks: []ethan.SubtaskProposal{
 		{ID: "t0.p1.t1", Description: "A"}}}}}
 	cases := map[string][]ethan.Event{
-		"no run_started":        {{Kind: ethan.EventTaskStarted, TaskID: "t0"}},
-		"task event without ID": {start, {Kind: ethan.EventTaskStarted}},
-		"choice without task":   {start, decided, {Kind: ethan.EventPlanChosen, PlanID: "t0.p1"}},
-		"plan of another task":  {start, decided, {Kind: ethan.EventPlanChosen, TaskID: "t0.p1.t1", PlanID: "t0.p1"}},
-		"decided twice":         {start, decided, decided},
+		"no run_started":         {{Kind: ethan.EventTaskStarted, TaskID: "t0"}},
+		"task event without ID":  {start, {Kind: ethan.EventTaskStarted}},
+		"choice without task":    {start, decided, {Kind: ethan.EventPlanChosen, PlanID: "t0.p1"}},
+		"plan of another task":   {start, decided, {Kind: ethan.EventPlanChosen, TaskID: "t0.p1.t1", PlanID: "t0.p1"}},
+		"decided twice":          {start, decided, decided},
+		"unfinished plan chosen": {start, decided, {Kind: ethan.EventPlanChosen, TaskID: "t0", PlanID: "t0.p1"}},
 		"cyclic plan": {start, {Kind: ethan.EventTaskDecided, TaskID: "t0", Plans: []ethan.PlanProposal{{Subtasks: []ethan.SubtaskProposal{
 			{ID: "a", DependsOn: []string{"b"}}, {ID: "b", DependsOn: []string{"a"}}}}}}},
 	}
