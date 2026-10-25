@@ -46,3 +46,19 @@ func TestSequenceAndByTaskFailOutsideTheScript(t *testing.T) {
 		t.Error("ByTask answered an unknown task")
 	}
 }
+
+func TestReplyHelpers(t *testing.T) {
+	call := ethan.ToolCall{ID: "c1", Name: "search"}
+	r, err := ethantest.Reply(ethantest.ToolCalls(call, ethan.ToolCall{ID: "c2", Name: "fetch"}))(ethan.Request{})
+	if err != nil || len(r.ToolCalls()) != 2 || r.ToolCalls()[0].ID != "c1" || r.ToolCalls()[1].ID != "c2" || r.Usage != ethantest.DefaultUsage {
+		t.Errorf("ToolCalls reply = %+v, %v", r, err)
+	}
+	r, err = ethantest.Atomic()(ethan.Request{})
+	if err != nil || !strings.Contains(string(r.Output), `"atomic":true`) {
+		t.Errorf("Atomic reply = %s, %v", r.Output, err)
+	}
+	r, err = ethantest.ReplyJSON(map[string]int{"n": 1})(ethan.Request{})
+	if err != nil || string(r.Output) != `{"n":1}` {
+		t.Errorf("ReplyJSON reply = %s, %v", r.Output, err)
+	}
+}
