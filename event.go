@@ -75,10 +75,13 @@ type Event struct {
 // one Run one at a time and in journal order. An observer registered with
 // WithObserver receives the events of every Run of the Engine, which arrive
 // concurrently when Runs overlap: it must then be safe for concurrent use.
-// ObserveWith registers an observer for one Run. The Run waits while an observer runs: one doing slow work,
-// such as writing to the network, should hand events to its own goroutine,
-// e.g. through a channel. Observers cannot emit events, so delivery cannot
-// deadlock.
+// ObserveWith registers an observer for one Run. Each observer gets its
+// own copy of each event.
+//
+// The Run waits while an observer runs: one doing slow work, such as
+// writing to the network, should hand events to its own goroutine, e.g.
+// through a channel. An observer may cause events itself, say by calling a
+// model of the Run; they are delivered after the current one.
 type Observer interface {
 	OnEvent(Event)
 }

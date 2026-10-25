@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/skrtk98/ethan"
 	"github.com/skrtk98/ethan/ethantest"
@@ -242,5 +243,96 @@ func TestNegativeNotesInPromptShowsNone(t *testing.T) {
 		if strings.Contains(ethantest.Prompt(c), "fact X") {
 			t.Error("a prompt shows the note")
 		}
+	}
+}
+
+func TestEachObserverGetsItsOwnCopy(t *testing.T) {
+	m := ethantest.New().On(ethan.TagPlan, ethantest.Atomic()).On(ethan.TagExecute, echoTask)
+	first := ethan.ObserverFunc(func(e ethan.Event) {
+		if e.Usage != nil {
+			e.Usage.InputTokens = -1
+		}
+	})
+	var seen []int
+	second := ethan.ObserverFunc(func(e ethan.Event) {
+		if e.Usage != nil {
+			seen = append(seen, e.Usage.InputTokens)
+		}
+	})
+	res, err := ethan.New(m, ethan.WithObserver(first), ethan.WithObserver(second)).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(seen, -1) {
+		t.Errorf("the second observer saw the first one's change: %v", seen)
+	}
+	for _, e := range res.Events {
+		if e.Usage != nil && e.Usage.InputTokens < 0 {
+			t.Errorf("a recorded %s event was changed", e.Kind)
+		}
+	}
+}
+
+// ctxPlanner keeps the context of the Run it plans for.
+type ctxPlanner struct{ ctx chan context.Context }
+
+func (p ctxPlanner) Plan(ctx context.Context, _ ethan.PlanRequest) (ethan.Decision, error) {
+	select {
+	case p.ctx <- ctx:
+	default:
+	}
+	return ethan.Decision{Atomic: true}, nil
+}
+
+func TestObserverCallingAModelOfTheRunDoesNotDeadlock(t *testing.T) {
+	judge := ethantest.New().On(ethan.TagScoreResult, ethantest.ReplyJSON(ethan.Score{Value: 1}))
+	m := ethantest.New().On(ethan.TagExecute, echoTask)
+	planner := ctxPlanner{ctx: make(chan context.Context, 1)}
+	var runCtx context.Context
+	scored := false
+	observer := ethan.ObserverFunc(func(e ethan.Event) {
+		if e.Kind == ethan.EventTaskDone {
+			runCtx = <-planner.ctx
+			_, err := (&ethan.LLMEvaluator{Model: judge}).ScoreResult(runCtx, ethan.Brief{Task: "goal"}, e.Text)
+			scored = err == nil
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := ethan.New(m, ethan.WithPlanner(planner), ethan.WithLimits(ethan.Limits{MaxConcurrency: 1})).
+		Run(ctx, "goal", ethan.ObserveWith(observer))
+	if err != nil || !scored {
+		t.Fatalf("err = %v, scored %v", err, scored)
+	}
+	if !slices.ContainsFunc(res.Events, func(e ethan.Event) bool { return e.Tag == ethan.TagScoreResult }) {
+		t.Error("the observer's call was not recorded")
+	}
+}
+
+// judgingModel asks a judge about each answer within its own call.
+type judgingModel struct{ inner, judge ethan.Model }
+
+func (m judgingModel) Generate(ctx context.Context, req ethan.Request) (*ethan.Response, error) {
+	resp, err := m.inner.Generate(ctx, req)
+	if err != nil || req.Tag != ethan.TagExecute {
+		return resp, err
+	}
+	if _, err := (&ethan.LLMEvaluator{Model: m.judge}).ScoreResult(ctx, ethan.Brief{}, resp.Text()); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func TestModelCallingAComponentWithinItsCallDoesNotDeadlock(t *testing.T) {
+	judge := ethantest.New().On(ethan.TagScoreResult, ethantest.ReplyJSON(ethan.Score{Value: 1}))
+	inner := ethantest.New().On(ethan.TagPlan, ethantest.Atomic()).On(ethan.TagExecute, echoTask)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := ethan.New(judgingModel{inner, judge}, ethan.WithLimits(ethan.Limits{MaxConcurrency: 1})).Run(ctx, "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(judge.Calls(ethan.TagScoreResult)); n != 1 || res.Usage.Total() != 3*ethantest.DefaultUsage.Total() {
+		t.Errorf("judged %d times, spent %d", n, res.Usage.Total())
 	}
 }

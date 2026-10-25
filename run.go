@@ -12,6 +12,7 @@ import (
 
 func (e *Engine) newRun(goal string, cancel context.CancelCauseFunc, opts []RunOption) *run {
 	r := &run{engine: e, goal: goal, cancel: cancel, sem: make(chan struct{}, e.limits.MaxConcurrency), board: &blackboard{}}
+	r.delivered.L = &r.emitMu
 	for _, o := range opts {
 		o(r)
 	}
@@ -68,11 +69,14 @@ func (r *run) finish(ctx context.Context, root *Task, err error) (*Result, error
 		err = cause // rather than the cancellations it caused
 	}
 	if err != nil {
-		r.emit(Event{Kind: EventRunFailed, Error: err.Error(), Code: r.failureCode(err), Usage: &usage})
+		r.emit(Event{Kind: EventRunFailed, Error: err.Error(), Code: r.failureCode(ctx, err), Usage: &usage})
 	} else {
 		r.emit(Event{Kind: EventRunDone, Usage: &usage, Value: r.value})
 	}
 	r.emitMu.Lock()
+	for r.delivering { // to observers, by another goroutine
+		r.delivered.Wait()
+	}
 	if err == nil && r.journalErr != nil {
 		err = r.journalErr // the last events could not be journaled
 	}
@@ -87,7 +91,7 @@ func (r *run) finish(ctx context.Context, root *Task, err error) (*Result, error
 }
 
 // failureCode classifies err, which the Run failed with, for Event.Code.
-func (r *run) failureCode(err error) string {
+func (r *run) failureCode(ctx context.Context, err error) string {
 	r.emitMu.Lock()
 	journalErr := r.journalErr
 	r.emitMu.Unlock()
@@ -98,6 +102,11 @@ func (r *run) failureCode(err error) string {
 		return "token_limit"
 	case journalErr != nil && errors.Is(err, journalErr):
 		return "journal"
+	case ctx.Err() != nil && errors.Is(err, context.Cause(ctx)):
+		// Canceled or timed out, perhaps with a cause of the caller's own.
+		err = ctx.Err()
+	}
+	switch {
 	case errors.Is(err, context.Canceled):
 		return "canceled"
 	case errors.Is(err, context.DeadlineExceeded):
@@ -123,6 +132,9 @@ type run struct {
 	journal    Journal
 	journalErr error
 	observers  []Observer // of this run alone
+	queue      []Event    // recorded but not yet delivered to the observers
+	delivering bool       // whether a goroutine is delivering the queue
+	delivered  sync.Cond  // signaled when delivering ends; L is &emitMu
 
 	into  *into
 	value json.RawMessage // the output converted as into asks
@@ -144,14 +156,13 @@ type meteredModel struct {
 	model Model
 }
 
+// inCallKey marks the context of a metered call, so that calls the model
+// makes within it count their tokens without taking a second slot of
+// MaxConcurrency, which the outer call would wait on forever.
+type inCallKey struct{}
+
 func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, error) {
 	r := mm.run
-	select {
-	case r.sem <- struct{}{}:
-		defer func() { <-r.sem }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
 	limit := r.engine.limits.MaxTokens
 	r.mu.Lock()
 	spent := r.spent.Total()
@@ -159,7 +170,7 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 	if limit > 0 && spent >= limit {
 		return nil, r.exceed(ErrTokenLimit)
 	}
-	resp, err := mm.model.Generate(ctx, req)
+	resp, err := mm.call(ctx, req)
 	if resp == nil {
 		if err == nil {
 			err = errors.New("ethan: model returned neither a response nor an error")
@@ -189,6 +200,21 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 		err = context.Cause(ctx)
 	}
 	return resp, err
+}
+
+// call makes the call within a slot of MaxConcurrency, released before
+// the usage is recorded, so that observers run without holding one.
+func (mm meteredModel) call(ctx context.Context, req Request) (*Response, error) {
+	if ctx.Value(inCallKey{}) == nil {
+		select {
+		case mm.run.sem <- struct{}{}:
+			defer func() { <-mm.run.sem }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		ctx = context.WithValue(ctx, inCallKey{}, true)
+	}
+	return mm.model.Generate(ctx, req)
 }
 
 // taskKey is the context key of the task whose model calls are made; their
@@ -222,12 +248,12 @@ func (r *run) stop(err error) {
 // emit records e and delivers it to the observers, one event at a time.
 func (r *run) emit(e Event) {
 	r.emitMu.Lock()
-	defer r.emitMu.Unlock()
-	r.emitLocked(e)
+	r.record(e)
+	r.deliver()
 }
 
-// emitLocked is emit with emitMu held.
-func (r *run) emitLocked(e Event) {
+// record journals e and queues it for the observers, with emitMu held.
+func (r *run) record(e Event) {
 	if e.Time.IsZero() {
 		e.Time = time.Now().UTC()
 	}
@@ -244,20 +270,45 @@ func (r *run) emitLocked(e Event) {
 		}
 	}
 	r.events = append(r.events, e)
-	for _, o := range r.engine.observers {
-		o.OnEvent(e)
+	r.queue = append(r.queue, e)
+}
+
+// deliver hands the queued events to the observers in order, and unlocks
+// emitMu, which must be held. Observers are called without emitMu, so that
+// one causing events, say by calling a model of the Run, cannot deadlock:
+// the goroutine already delivering delivers those too, after the current
+// one, while the others only queue theirs.
+func (r *run) deliver() {
+	if r.delivering {
+		r.emitMu.Unlock()
+		return
 	}
-	for _, o := range r.observers {
-		o.OnEvent(e)
+	r.delivering = true
+	for len(r.queue) > 0 {
+		batch := r.queue
+		r.queue = nil
+		r.emitMu.Unlock()
+		for _, e := range batch {
+			for _, o := range r.engine.observers {
+				o.OnEvent(e.detached()) // each its own copy
+			}
+			for _, o := range r.observers {
+				o.OnEvent(e.detached())
+			}
+		}
+		r.emitMu.Lock()
 	}
+	r.delivering = false
+	r.delivered.Broadcast()
+	r.emitMu.Unlock()
 }
 
 // post adds a note to the blackboard and records it, in the same order.
 func (r *run) post(author, text string) {
 	r.emitMu.Lock()
-	defer r.emitMu.Unlock()
 	n := r.board.post(author, text)
-	r.emitLocked(Event{Kind: EventNoteAdded, Time: n.Time, TaskID: author, Text: n.Text})
+	r.record(Event{Kind: EventNoteAdded, Time: n.Time, TaskID: author, Text: n.Text})
+	r.deliver()
 }
 
 // takeTask counts a task about to start against Limits.MaxTasks.

@@ -306,6 +306,18 @@ func TestAnswerArrivingAfterCancellationIsNotUsed(t *testing.T) {
 	}
 }
 
+func TestCancellationWithACauseIsCodedCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	m := ethantest.New().On(ethan.TagPlan, func(ethan.Request) (*ethan.Response, error) {
+		cancel(errors.New("shutting down"))
+		return nil, context.Canceled
+	})
+	res, _ := ethan.New(m).Run(ctx, "goal")
+	if end := res.Events[len(res.Events)-1]; end.Code != "canceled" || end.Error != "shutting down" {
+		t.Errorf("code %q, error %q", end.Code, end.Error)
+	}
+}
+
 func TestCanceledRunIsCodedCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := ethantest.New().On(ethan.TagPlan, func(ethan.Request) (*ethan.Response, error) {
