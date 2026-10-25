@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/openai/openai-go/v3 v3.81.0
-	github.com/skrtk98/ethan v0.0.0-00010101000000-000000000000
+	github.com/skrtk98/ethan v0.0.0-20261025025047-6127b524fb86
 )
 
 require (

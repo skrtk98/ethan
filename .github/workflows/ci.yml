@@ -23,7 +23,10 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: 1.26.x # the latest patch release, for govulncheck
-          cache-dependency-path: "**/go.sum" # the core module has none
+          # A key per module; the core module has no go.sum.
+          cache-dependency-path: |
+            ${{ matrix.module }}/go.mod
+            ${{ matrix.module }}/go.sum*
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go mod tidy -diff
