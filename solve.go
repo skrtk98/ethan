@@ -347,7 +347,12 @@ func (r *run) executePlan(parentCtx context.Context, parent *Task, b Brief, p *P
 			}
 			var inputs []SubtaskResult
 			for _, d := range st.DependsOn {
-				<-done[d] // every subtask closes its channel, even when skipped
+				select {
+				case <-done[d]: // every subtask closes its channel, even when skipped
+				case <-ctx.Done():
+					r.prune(st, "canceled")
+					return
+				}
 				dep := byID[d]
 				if dep.Status != StatusDone {
 					r.prune(st, "dependency "+dep.ID+" did not finish")

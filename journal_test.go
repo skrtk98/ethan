@@ -72,6 +72,15 @@ func TestTaskUsageCountsItsOwnCalls(t *testing.T) {
 	}
 }
 
+func TestLastLineWithoutNewlineIsNotAnEvent(t *testing.T) {
+	// Even if it parses: CreateJournal would remove it before appending.
+	complete := `{"kind":"run_started","time":"2026-10-18T00:00:00Z","text":"goal","format":1}`
+	events, err := ethan.DecodeJournal(strings.NewReader(complete + "\n" + complete))
+	if err != nil || len(events) != 1 {
+		t.Errorf("read %d events, err %v; want 1", len(events), err)
+	}
+}
+
 func TestTornLastLineIsDroppedOnReadAndAppend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "run.jsonl")
 	torn := `{"kind":"run_started","time":"2026-10-18T00:00:00Z","text":"goal","format":1}` + "\n" + `{"kind":"task_sta`

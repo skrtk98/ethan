@@ -99,28 +99,24 @@ func ReadJournal(path string) ([]Event, error) {
 	return DecodeJournal(f)
 }
 
-// DecodeJournal reads events written as JSON Lines. A last line cut short
-// is ignored.
+// DecodeJournal reads events written as JSON Lines. An event is complete
+// once its line ends: a last line without a newline, cut short as the
+// process died, is ignored, as CreateJournal removes it.
 func DecodeJournal(r io.Reader) ([]Event, error) {
 	var events []Event
 	br := bufio.NewReader(r)
 	for n := 1; ; n++ {
 		line, err := br.ReadBytes('\n')
-		if len(line) > 0 {
-			var e Event
-			if jerr := json.Unmarshal(line, &e); jerr != nil {
-				if errors.Is(err, io.EOF) {
-					return events, nil // a torn last line
-				}
-				return nil, fmt.Errorf("journal line %d: %w", n, jerr)
-			}
-			events = append(events, e)
-		}
 		if errors.Is(err, io.EOF) {
 			return events, nil
 		}
 		if err != nil {
 			return nil, err
 		}
+		var e Event
+		if err := json.Unmarshal(line, &e); err != nil {
+			return nil, fmt.Errorf("journal line %d: %w", n, err)
+		}
+		events = append(events, e)
 	}
 }

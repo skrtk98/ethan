@@ -3,6 +3,7 @@ package ethan
 import (
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // Replay rebuilds the Result of a run from its journaled events, without
@@ -26,9 +27,14 @@ type replayed struct {
 	total Usage  // of every model call journaled
 }
 
+// ErrInvalidJournal is returned by Replay and Engine.Resume for events that
+// do not describe a run, such as a journal of another program or one
+// edited by hand.
+var ErrInvalidJournal = errors.New("ethan: invalid journal")
+
 func replay(events []Event) (*replayed, error) {
 	if len(events) == 0 || events[0].Kind != EventRunStarted {
-		return nil, errors.New("ethan: journal does not start with run_started")
+		return nil, fmt.Errorf("%w: it does not start with run_started", ErrInvalidJournal)
 	}
 	if f := events[0].Format; f != JournalFormat {
 		return nil, fmt.Errorf("%w: %d (this version reads %d)", ErrJournalFormat, f, JournalFormat)
@@ -37,23 +43,45 @@ func replay(events []Event) (*replayed, error) {
 	tasks := map[string]*Task{"t0": s.root}
 	plans := map[string]*Plan{}
 	for i, e := range events {
+		invalid := func(format string, args ...any) error {
+			return fmt.Errorf("%w: event %d (%s): %s", ErrInvalidJournal, i+1, e.Kind, fmt.Sprintf(format, args...))
+		}
 		if i > 0 && e.Kind == EventRunStarted {
-			return nil, fmt.Errorf("ethan: journal event %d: a second run starts; a journal holds one run", i+1)
+			return nil, invalid("a second run starts; a journal holds one run")
 		}
 		var (
 			t *Task
 			p *Plan
 		)
+		if e.TaskID != "" && e.Kind != EventNoteAdded && e.Kind != EventUsage {
+			if t = tasks[e.TaskID]; t == nil {
+				return nil, invalid("unknown task %s", e.TaskID)
+			}
+		}
 		if e.PlanID != "" {
 			if p = plans[e.PlanID]; p == nil {
-				return nil, fmt.Errorf("ethan: journal event %d: unknown plan %s", i+1, e.PlanID)
+				return nil, invalid("unknown plan %s", e.PlanID)
 			}
-		} else if e.TaskID != "" && e.Kind != EventNoteAdded && e.Kind != EventUsage {
-			if t = tasks[e.TaskID]; t == nil {
-				return nil, fmt.Errorf("ethan: journal event %d: unknown task %s", i+1, e.TaskID)
+			if t != nil && !slices.Contains(t.Plans, p) {
+				return nil, invalid("plan %s is not one of task %s's", p.ID, t.ID)
 			}
 		}
 		switch e.Kind {
+		case EventTaskStarted, EventTaskDecided, EventTaskDone, EventTaskFailed, EventTaskPruned, EventPlanChosen:
+			if t == nil {
+				return nil, invalid("no task")
+			}
+		}
+		switch e.Kind {
+		case EventPlanScored, EventPlanStarted, EventPlanDone, EventPlanFailed, EventPlanPruned, EventResultScored, EventPlanChosen:
+			if p == nil {
+				return nil, invalid("no plan")
+			}
+		}
+		switch e.Kind {
+		case EventRunResumed:
+			reopen(s.root) // as Resume did before continuing
+			s.err = ""
 		case EventRunDone:
 			s.err, s.value = "", e.Value
 		case EventRunFailed:
@@ -61,9 +89,17 @@ func replay(events []Event) (*replayed, error) {
 		case EventTaskStarted:
 			t.Status = StatusRunning
 		case EventTaskDecided:
+			if t.Atomic || t.Plans != nil {
+				return nil, invalid("task %s is decided twice", t.ID)
+			}
 			if len(e.Plans) == 0 {
 				t.Atomic = true
 				break
+			}
+			for _, pp := range e.Plans {
+				if !validProposal(pp, func(string) bool { return true }) {
+					return nil, invalid("a plan has no subtasks, repeats an ID or has dependencies that are unknown or cyclic")
+				}
 			}
 			t.Plans = newPlans(t, e.Plans, func(name string) string { return name })
 			for _, p := range t.Plans {
@@ -99,7 +135,6 @@ func replay(events []Event) (*replayed, error) {
 		case EventPlanChosen:
 			// The choice finishes the task, even if the run stopped before
 			// recording it done.
-			t := tasks[e.TaskID]
 			t.Chosen, t.Output, t.Score, t.Status, t.Error = p.ID, p.Output, p.ResultScore, StatusDone, ""
 		case EventNoteAdded:
 			s.notes = append(s.notes, Note{Author: e.TaskID, Text: e.Text, Time: e.Time})

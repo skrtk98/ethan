@@ -156,6 +156,42 @@ func TestReplayRejectsForeignEvents(t *testing.T) {
 	}
 }
 
+func TestReplayRejectsMalformedEventsWithoutPanicking(t *testing.T) {
+	start := ethan.Event{Kind: ethan.EventRunStarted, Text: "g", Format: ethan.JournalFormat}
+	decided := ethan.Event{Kind: ethan.EventTaskDecided, TaskID: "t0", Plans: []ethan.PlanProposal{{Subtasks: []ethan.SubtaskProposal{
+		{ID: "t0.p1.t1", Description: "A"}}}}}
+	cases := map[string][]ethan.Event{
+		"no run_started":        {{Kind: ethan.EventTaskStarted, TaskID: "t0"}},
+		"task event without ID": {start, {Kind: ethan.EventTaskStarted}},
+		"choice without task":   {start, decided, {Kind: ethan.EventPlanChosen, PlanID: "t0.p1"}},
+		"plan of another task":  {start, decided, {Kind: ethan.EventPlanChosen, TaskID: "t0.p1.t1", PlanID: "t0.p1"}},
+		"decided twice":         {start, decided, decided},
+		"cyclic plan": {start, {Kind: ethan.EventTaskDecided, TaskID: "t0", Plans: []ethan.PlanProposal{{Subtasks: []ethan.SubtaskProposal{
+			{ID: "a", DependsOn: []string{"b"}}, {ID: "b", DependsOn: []string{"a"}}}}}}},
+	}
+	for name, events := range cases {
+		if _, err := ethan.Replay(events); !errors.Is(err, ethan.ErrInvalidJournal) {
+			t.Errorf("%s: err = %v, want ErrInvalidJournal", name, err)
+		}
+	}
+}
+
+func TestReplayReopensWhatAResumeReopened(t *testing.T) {
+	res, err := ethan.Replay([]ethan.Event{
+		{Kind: ethan.EventRunStarted, Text: "g", Format: ethan.JournalFormat},
+		{Kind: ethan.EventTaskStarted, TaskID: "t0"},
+		{Kind: ethan.EventTaskFailed, TaskID: "t0", Error: "boom"},
+		{Kind: ethan.EventRunFailed, Error: "boom", Code: "error"},
+		{Kind: ethan.EventRunResumed},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Root.Status != ethan.StatusPending || res.Root.Error != "" || res.Error != "" {
+		t.Errorf("root %s %q, run error %q; want pending and no errors", res.Root.Status, res.Root.Error, res.Error)
+	}
+}
+
 func TestJournalOfAnotherFormatIsRejected(t *testing.T) {
 	for _, format := range []int{0, ethan.JournalFormat + 1} {
 		events := []ethan.Event{{Kind: ethan.EventRunStarted, Text: "g", Format: format}}

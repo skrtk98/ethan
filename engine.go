@@ -131,8 +131,8 @@ func (r *Result) WriteTrace(w io.Writer) error {
 	return enc.Encode(r)
 }
 
-// Run solves goal and returns the root task's output. On failure the
-// returned Result still holds the explored tree. When a limit is exceeded
+// Run solves goal and returns the root task's output. The Result is never
+// nil: on failure it still holds the explored tree. When a limit is exceeded
 // the whole Run is canceled and the error wraps ErrLimitExceeded.
 func (e *Engine) Run(ctx context.Context, goal string, opts ...RunOption) (*Result, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
@@ -150,8 +150,9 @@ func (e *Engine) Run(ctx context.Context, goal string, opts ...RunOption) (*Resu
 // that were running when the run stopped, is solved again. Limits apply to
 // the resumed run alone, while Result.Usage includes the earlier runs.
 //
-// A journal written in another JournalFormat is rejected with an error
-// wrapping ErrJournalFormat. To keep the journal complete, pass JournalTo with the same journal to
+// Events that cannot be rebuilt into a run are rejected, with a nil Result
+// and an error wrapping ErrJournalFormat or ErrInvalidJournal; otherwise
+// the Result is never nil. To keep the journal complete, pass JournalTo with the same journal to
 // append to. The returned Result holds the events of the earlier runs too.
 func (e *Engine) Resume(ctx context.Context, events []Event, opts ...RunOption) (*Result, error) {
 	s, err := replay(events)
