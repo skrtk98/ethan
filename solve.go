@@ -72,7 +72,7 @@ func (r *run) solve(ctx context.Context, t *Task, path []string, inputs []Subtas
 }
 
 func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []SubtaskResult) error {
-	b := Brief{Goal: r.goal, Path: path, Task: t.Description, Inputs: inputs, Notes: r.board.Recent(r.engine.notesInPrompt)}
+	b := Brief{Goal: r.goal, Path: path, Task: t.Description, Inputs: inputs, Notes: r.board.recent(r.engine.notesInPrompt)}
 	// A task resumed from a journal keeps the decision it had made.
 	switch {
 	case t.Atomic:

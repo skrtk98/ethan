@@ -2,6 +2,7 @@ package ethan
 
 import (
 	"encoding/json"
+	"slices"
 	"time"
 )
 
@@ -59,9 +60,11 @@ type Event struct {
 	Usage *Usage `json:"usage,omitempty"`
 }
 
-// Observer receives the events of a Run. The engine delivers events one at
-// a time and in journal order, so implementations need not be safe for
-// concurrent use. The Run waits while an observer runs: one doing slow work,
+// Observer receives the events of a Run. The engine delivers the events of
+// one Run one at a time and in journal order. An observer registered with
+// WithObserver receives the events of every Run of the Engine, which arrive
+// concurrently when Runs overlap: it must then be safe for concurrent use.
+// ObserveWith registers an observer for one Run. The Run waits while an observer runs: one doing slow work,
 // such as writing to the network, should hand events to its own goroutine,
 // e.g. through a channel. Observers cannot emit events, so delivery cannot
 // deadlock.
@@ -74,3 +77,29 @@ type ObserverFunc func(Event)
 
 // OnEvent implements Observer.
 func (f ObserverFunc) OnEvent(e Event) { f(e) }
+
+// detached returns a copy of e sharing no memory with the explored tree or
+// with other events, so that observers may keep or change it.
+func (e Event) detached() Event {
+	if e.Score != nil {
+		s := *e.Score
+		e.Score = &s
+	}
+	if e.Usage != nil {
+		u := *e.Usage
+		e.Usage = &u
+	}
+	e.Value = slices.Clone(e.Value)
+	if e.Plans != nil {
+		plans := make([]PlanProposal, len(e.Plans))
+		for i, p := range e.Plans {
+			p.Subtasks = slices.Clone(p.Subtasks)
+			for j := range p.Subtasks {
+				p.Subtasks[j].DependsOn = slices.Clone(p.Subtasks[j].DependsOn)
+			}
+			plans[i] = p
+		}
+		e.Plans = plans
+	}
+	return e
+}

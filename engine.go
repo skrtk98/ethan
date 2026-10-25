@@ -70,7 +70,7 @@ func WithObserver(o Observer) Option {
 }
 
 // WithNotesInPrompt sets how many of the latest blackboard notes are shown
-// in prompts. Default 20.
+// in prompts; zero or less shows none. Default 20.
 func WithNotesInPrompt(n int) Option {
 	return func(e *Engine) { e.notesInPrompt = n }
 }
@@ -174,6 +174,11 @@ func (e *Engine) Resume(ctx context.Context, events []Event, opts ...RunOption) 
 
 // RunOption configures one Run or Resume.
 type RunOption func(*run)
+
+// ObserveWith delivers the events of the run, and of no other, to o.
+func ObserveWith(o Observer) RunOption {
+	return func(r *run) { r.observers = append(r.observers, o) }
+}
 
 // JournalTo records the events of the run in j as they happen, so that it
 // can be traced and resumed after it stops. A journal holds one run and the

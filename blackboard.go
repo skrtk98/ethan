@@ -5,7 +5,8 @@ import (
 	"time"
 )
 
-// Note is an entry on the blackboard.
+// Note is an entry on the blackboard, the append-only memory shared by all
+// agents of a Run.
 type Note struct {
 	// Author is the ID of the task whose agent wrote the note.
 	Author string    `json:"author"`
@@ -13,32 +14,31 @@ type Note struct {
 	Time   time.Time `json:"time"`
 }
 
-// Blackboard is the append-only memory shared by all agents of a Run.
-// It is safe for concurrent use.
-type Blackboard struct {
+// blackboard holds the notes of a Run. It is safe for concurrent use.
+type blackboard struct {
 	mu    sync.Mutex
 	notes []Note
 }
 
-// Post appends a note and returns it.
-func (b *Blackboard) Post(author, text string) Note {
-	n := Note{Author: author, Text: text, Time: time.Now()}
+// post appends a note and returns it.
+func (b *blackboard) post(author, text string) Note {
+	n := Note{Author: author, Text: text, Time: time.Now().UTC()}
 	b.mu.Lock()
 	b.notes = append(b.notes, n)
 	b.mu.Unlock()
 	return n
 }
 
-// Recent returns up to n of the latest notes, oldest first.
-func (b *Blackboard) Recent(n int) []Note {
+// recent returns up to n of the latest notes, oldest first.
+func (b *blackboard) recent(n int) []Note {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	start := max(len(b.notes)-n, 0)
+	start := len(b.notes) - min(max(n, 0), len(b.notes))
 	return append([]Note(nil), b.notes[start:]...)
 }
 
-// Notes returns all notes, oldest first.
-func (b *Blackboard) Notes() []Note {
+// all returns all notes, oldest first.
+func (b *blackboard) all() []Note {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]Note{}, b.notes...)

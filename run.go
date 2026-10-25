@@ -11,7 +11,7 @@ import (
 )
 
 func (e *Engine) newRun(goal string, cancel context.CancelCauseFunc, opts []RunOption) *run {
-	r := &run{engine: e, goal: goal, cancel: cancel, sem: make(chan struct{}, e.limits.MaxConcurrency), board: &Blackboard{}}
+	r := &run{engine: e, goal: goal, cancel: cancel, sem: make(chan struct{}, e.limits.MaxConcurrency), board: &blackboard{}}
 	for _, o := range opts {
 		o(r)
 	}
@@ -79,7 +79,7 @@ func (r *run) finish(ctx context.Context, root *Task, err error) (*Result, error
 	events := r.events
 	r.emitMu.Unlock()
 	res := &Result{Goal: r.goal, Output: root.Output, Value: r.value, Score: root.Score, Root: root, Usage: usage,
-		Notes: r.board.Notes(), Events: events}
+		Notes: r.board.all(), Events: events}
 	if err != nil {
 		res.Error = err.Error()
 	}
@@ -96,12 +96,13 @@ type run struct {
 	synthesizer Synthesizer
 	cancel      context.CancelCauseFunc
 	sem         chan struct{}
-	board       *Blackboard
+	board       *blackboard
 
 	emitMu     sync.Mutex
 	events     []Event
 	journal    Journal
 	journalErr error
+	observers  []Observer // of this run alone
 
 	into  *into
 	value json.RawMessage // the output converted as into asks
@@ -196,24 +197,43 @@ func (r *run) stop(err error) {
 
 // emit records e and delivers it to the observers, one event at a time.
 func (r *run) emit(e Event) {
-	e.Time = time.Now()
 	r.emitMu.Lock()
 	defer r.emitMu.Unlock()
-	r.events = append(r.events, e)
+	r.emitLocked(e)
+}
+
+// emitLocked is emit with emitMu held.
+func (r *run) emitLocked(e Event) {
+	if e.Time.IsZero() {
+		e.Time = time.Now().UTC()
+	}
+	e = e.detached()
 	if j := r.journal; j != nil && r.journalErr == nil {
 		if err := j.Append(e); err != nil {
 			r.journalErr = fmt.Errorf("ethan: journal: %w", err)
 			r.stop(r.journalErr)
+			if e.Kind == EventRunDone {
+				// What is recorded and observed must agree with the error
+				// the Run returns.
+				e = Event{Kind: EventRunFailed, Time: e.Time, Text: r.journalErr.Error(), Usage: e.Usage}
+			}
 		}
 	}
+	r.events = append(r.events, e)
 	for _, o := range r.engine.observers {
+		o.OnEvent(e)
+	}
+	for _, o := range r.observers {
 		o.OnEvent(e)
 	}
 }
 
+// post adds a note to the blackboard and records it, in the same order.
 func (r *run) post(author, text string) {
-	n := r.board.Post(author, text)
-	r.emit(Event{Kind: EventNoteAdded, TaskID: author, Text: n.Text})
+	r.emitMu.Lock()
+	defer r.emitMu.Unlock()
+	n := r.board.post(author, text)
+	r.emitLocked(Event{Kind: EventNoteAdded, Time: n.Time, TaskID: author, Text: n.Text})
 }
 
 // takeTask counts a task about to start against Limits.MaxTasks.

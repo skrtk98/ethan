@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -139,5 +140,107 @@ func TestWriteTraceProducesJSON(t *testing.T) {
 	}
 	if !bytes.Contains(buf.Bytes(), []byte(`"notes": []`)) {
 		t.Error("a run without notes must write an empty list, not null")
+	}
+}
+
+// kindJournal fails on events of one kind.
+type kindJournal struct{ fail ethan.EventKind }
+
+func (j kindJournal) Append(e ethan.Event) error {
+	if e.Kind == j.fail {
+		return errors.New("disk full")
+	}
+	return nil
+}
+
+func TestRunDoneThatCannotBeJournaledIsObservedAsAFailure(t *testing.T) {
+	m := ethantest.New().On(ethan.TagPlan, ethantest.Atomic()).On(ethan.TagExecute, echoTask)
+	var last ethan.Event
+	res, err := ethan.New(m).Run(context.Background(), "goal",
+		ethan.JournalTo(kindJournal{fail: ethan.EventRunDone}),
+		ethan.ObserveWith(ethan.ObserverFunc(func(e ethan.Event) { last = e })))
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if end := res.Events[len(res.Events)-1]; end.Kind != ethan.EventRunFailed || last.Kind != ethan.EventRunFailed {
+		t.Errorf("last event recorded %s, observed %s; want run_failed", end.Kind, last.Kind)
+	}
+	if replayed, err := ethan.Replay(res.Events); err != nil || replayed.Error == "" {
+		t.Errorf("Replay: %v, Error %q", err, replayed.Error)
+	}
+}
+
+func TestObserveWithSeesOnlyItsRun(t *testing.T) {
+	m := ethantest.New().On(ethan.TagPlan, ethantest.Atomic()).On(ethan.TagExecute, echoTask)
+	engine := ethan.New(m)
+	var mu sync.Mutex
+	goals := map[string]int{}
+	var wg sync.WaitGroup
+	for _, goal := range []string{"one", "two"} {
+		wg.Go(func() {
+			engine.Run(context.Background(), goal, ethan.ObserveWith(ethan.ObserverFunc(func(e ethan.Event) {
+				if e.Kind == ethan.EventRunStarted {
+					mu.Lock()
+					goals[goal+":"+e.Text]++
+					mu.Unlock()
+				}
+			})))
+		})
+	}
+	wg.Wait()
+	if len(goals) != 2 || goals["one:one"] != 1 || goals["two:two"] != 1 {
+		t.Errorf("run_started observed as %v", goals)
+	}
+}
+
+func TestObserversCannotChangeTheTree(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, ethantest.Decompose(
+			plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}}),
+			plan("q", sub{ID: "c", Description: "C"}))).
+		On(ethan.TagExecute, echoTask).
+		On(ethan.TagScorePlan, ethantest.ReplyJSON(ethan.Score{Value: 0.5, Reason: "fine"})).
+		On(ethan.TagSynthesize, joinResults)
+	vandal := ethan.ObserverFunc(func(e ethan.Event) {
+		if e.Score != nil {
+			e.Score.Reason = "changed"
+		}
+		for _, p := range e.Plans {
+			for i := range p.Subtasks {
+				p.Subtasks[i].DependsOn = nil
+			}
+		}
+	})
+	res, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1}),
+		ethan.WithStrategy(ethan.BeamStrategy{Width: 1}), ethan.WithObserver(vandal)).Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := res.Root.Plans[0].PlanScore; s == nil || s.Reason != "fine" {
+		t.Errorf("plan score = %+v", s)
+	}
+	if deps := res.Root.Plans[0].Subtasks[1].DependsOn; len(deps) != 1 {
+		t.Errorf("B depends on %v", deps)
+	}
+}
+
+func TestNegativeNotesInPromptShowsNone(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B", DependsOn: []string{"a"}}))).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			last := req.Messages[len(req.Messages)-1]
+			if ethantest.Task(req) == "A" && last.Parts[0].ToolResult == nil {
+				return ethantest.ToolCalls(ethan.ToolCall{ID: "n1", Name: "note", Input: json.RawMessage(`{"text":"fact X"}`)}), nil
+			}
+			return echoTask(req)
+		}).
+		On(ethan.TagSynthesize, joinResults)
+	if _, err := ethan.New(m, ethan.WithNotesInPrompt(-1)).Run(context.Background(), "goal"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range m.Calls(ethan.TagExecute) {
+		if strings.Contains(ethantest.Prompt(c), "fact X") {
+			t.Error("a prompt shows the note")
+		}
 	}
 }
