@@ -68,7 +68,7 @@ func (r *run) finish(ctx context.Context, root *Task, err error) (*Result, error
 		err = cause // rather than the cancellations it caused
 	}
 	if err != nil {
-		r.emit(Event{Kind: EventRunFailed, Text: err.Error(), Usage: &usage})
+		r.emit(Event{Kind: EventRunFailed, Error: err.Error(), Code: r.failureCode(err), Usage: &usage})
 	} else {
 		r.emit(Event{Kind: EventRunDone, Usage: &usage, Value: r.value})
 	}
@@ -84,6 +84,26 @@ func (r *run) finish(ctx context.Context, root *Task, err error) (*Result, error
 		res.Error = err.Error()
 	}
 	return res, err
+}
+
+// failureCode classifies err, which the Run failed with, for Event.Code.
+func (r *run) failureCode(err error) string {
+	r.emitMu.Lock()
+	journalErr := r.journalErr
+	r.emitMu.Unlock()
+	switch {
+	case errors.Is(err, ErrTaskLimit):
+		return "task_limit"
+	case errors.Is(err, ErrTokenLimit):
+		return "token_limit"
+	case journalErr != nil && errors.Is(err, journalErr):
+		return "journal"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	}
+	return "error"
 }
 
 // run holds the state of one Run.
@@ -155,7 +175,7 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 	}
 	r.mu.Unlock()
 	usage := resp.Usage
-	e := Event{Kind: EventUsage, Text: req.Tag, Usage: &usage}
+	e := Event{Kind: EventUsage, Tag: req.Tag, Usage: &usage}
 	if t != nil {
 		e.TaskID = t.ID
 	}
@@ -215,7 +235,7 @@ func (r *run) emitLocked(e Event) {
 			if e.Kind == EventRunDone {
 				// What is recorded and observed must agree with the error
 				// the Run returns.
-				e = Event{Kind: EventRunFailed, Time: e.Time, Text: r.journalErr.Error(), Usage: e.Usage}
+				e = Event{Kind: EventRunFailed, Time: e.Time, Error: r.journalErr.Error(), Code: "journal", Usage: e.Usage}
 			}
 		}
 	}

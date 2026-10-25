@@ -57,7 +57,7 @@ func replay(events []Event) (*replayed, error) {
 		case EventRunDone:
 			s.err, s.value = "", e.Value
 		case EventRunFailed:
-			s.err, s.value = e.Text, nil
+			s.err, s.value = e.Error, nil
 		case EventTaskStarted:
 			t.Status = StatusRunning
 		case EventTaskDecided:
@@ -75,9 +75,9 @@ func replay(events []Event) (*replayed, error) {
 		case EventTaskDone:
 			t.Status, t.Output, t.Score, t.Error = StatusDone, e.Text, e.Score, ""
 		case EventTaskFailed:
-			t.Status, t.Error = StatusFailed, e.Text
+			t.Status, t.Error = StatusFailed, e.Error
 		case EventTaskPruned:
-			t.Status, t.Error = StatusPruned, e.Text
+			t.Status, t.Error = StatusPruned, e.Reason
 		case EventUsage:
 			u := usageOf(e)
 			s.total = s.total.Add(u)
@@ -91,7 +91,7 @@ func replay(events []Event) (*replayed, error) {
 		case EventPlanDone:
 			p.Status, p.Output, p.Error = StatusDone, e.Text, ""
 		case EventPlanFailed:
-			p.Status, p.Error = StatusFailed, e.Text
+			p.Status, p.Error = StatusFailed, e.Error
 		case EventPlanPruned:
 			p.Status = StatusPruned
 		case EventResultScored:

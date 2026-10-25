@@ -227,9 +227,13 @@ func progress(e ethan.Event) {
 		line += fmt.Sprintf(" tokens=%d", e.Usage.Total())
 	}
 	switch e.Kind {
-	case ethan.EventTaskStarted, ethan.EventTaskDecided, ethan.EventPlanStarted, ethan.EventNoteAdded,
-		ethan.EventTaskFailed, ethan.EventPlanFailed:
+	case ethan.EventTaskStarted, ethan.EventPlanStarted, ethan.EventNoteAdded:
 		line += " " + clip(e.Text, 90)
+	case ethan.EventTaskDecided:
+		line += fmt.Sprintf(" %d plans", len(e.Plans))
+	}
+	if e.Error != "" {
+		line += " " + clip(e.Error, 90)
 	}
 	if e.Reason != "" {
 		line += " (" + clip(e.Reason, 90) + ")"

@@ -50,7 +50,7 @@ func (r *run) start(ctx context.Context, t *Task, path []string, inputs []Subtas
 // prune records that t was not started, and why.
 func (r *run) prune(t *Task, reason string) {
 	t.Status, t.Error = StatusPruned, reason
-	r.emit(Event{Kind: EventTaskPruned, TaskID: t.ID, Text: reason})
+	r.emit(Event{Kind: EventTaskPruned, TaskID: t.ID, Reason: reason})
 }
 
 // solve solves t, recording its outcome on t. path holds the ancestors'
@@ -63,7 +63,7 @@ func (r *run) solve(ctx context.Context, t *Task, path []string, inputs []Subtas
 	if err != nil {
 		t.Status = StatusFailed
 		t.Error = err.Error()
-		r.emit(Event{Kind: EventTaskFailed, TaskID: t.ID, Text: t.Error, Usage: r.taskUsage(t)})
+		r.emit(Event{Kind: EventTaskFailed, TaskID: t.ID, Error: t.Error, Usage: r.taskUsage(t)})
 		return fmt.Errorf("task %s: %w", t.ID, err)
 	}
 	t.Status = StatusDone
@@ -95,7 +95,7 @@ func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []Su
 				for i, p := range plans {
 					proposals[i] = proposalOf(p)
 				}
-				r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: strconv.Itoa(len(plans)), Plans: proposals})
+				r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Plans: proposals})
 				return r.explore(ctx, t, b, plans)
 			}
 			why = fmt.Sprintf("none of the %d proposed plans is valid", len(d.Plans))
@@ -104,7 +104,7 @@ func (r *run) solveTask(ctx context.Context, t *Task, path []string, inputs []Su
 		}
 		// A failed or unusable decision falls back to direct execution.
 	}
-	r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Text: "atomic", Reason: why})
+	r.emit(Event{Kind: EventTaskDecided, TaskID: t.ID, Reason: why})
 	return r.executeLeaf(ctx, t, b)
 }
 
@@ -304,7 +304,7 @@ func (x *exploration) Execute(ctx context.Context, p *Plan) error {
 	if err := x.run.executePlan(ctx, x.task, x.brief, p); err != nil {
 		p.Status = StatusFailed
 		p.Error = err.Error()
-		x.run.emit(Event{Kind: EventPlanFailed, TaskID: x.task.ID, PlanID: p.ID, Text: p.Error})
+		x.run.emit(Event{Kind: EventPlanFailed, TaskID: x.task.ID, PlanID: p.ID, Error: p.Error})
 		return fmt.Errorf("plan %s: %w", p.ID, err)
 	}
 	p.Status = StatusDone

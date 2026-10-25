@@ -189,8 +189,8 @@ func TestInvalidPlansAreDroppedAndTaskFallsBackToDirectExecution(t *testing.T) {
 	if !res.Root.Atomic || res.Output != "out(goal)" {
 		t.Errorf("root = %+v", res.Root)
 	}
-	if e := firstEvent(res, ethan.EventTaskDecided); e.Text != "atomic" || e.Reason != "none of the 3 proposed plans is valid" {
-		t.Errorf("decision %q, reason %q", e.Text, e.Reason)
+	if e := firstEvent(res, ethan.EventTaskDecided); len(e.Plans) != 0 || e.Reason != "none of the 3 proposed plans is valid" {
+		t.Errorf("plans %v, reason %q", e.Plans, e.Reason)
 	}
 }
 
@@ -201,8 +201,8 @@ func TestAFailedPlannerIsRecordedInTheDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e := firstEvent(res, ethan.EventTaskDecided); e.Text != "atomic" || !strings.HasPrefix(e.Reason, "plan: ") {
-		t.Errorf("decision %q, reason %q", e.Text, e.Reason)
+	if e := firstEvent(res, ethan.EventTaskDecided); len(e.Plans) != 0 || !strings.HasPrefix(e.Reason, "plan: ") {
+		t.Errorf("plans %v, reason %q", e.Plans, e.Reason)
 	}
 }
 
@@ -287,6 +287,24 @@ func TestTokenLimitStopsCallsOnceReached(t *testing.T) {
 	}
 	if len(m.Calls(ethan.TagExecute)) != 0 || res.Usage.Total() != 20 {
 		t.Errorf("executed %d times, spent %d", len(m.Calls(ethan.TagExecute)), res.Usage.Total())
+	}
+	if end := res.Events[len(res.Events)-1]; end.Kind != ethan.EventRunFailed || end.Code != "token_limit" || end.Error == "" {
+		t.Errorf("last event %s, code %q, error %q", end.Kind, end.Code, end.Error)
+	}
+}
+
+func TestCanceledRunIsCodedCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m := ethantest.New().On(ethan.TagPlan, func(ethan.Request) (*ethan.Response, error) {
+		cancel()
+		return nil, context.Canceled
+	})
+	res, err := ethan.New(m).Run(ctx, "goal")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if end := res.Events[len(res.Events)-1]; end.Code != "canceled" {
+		t.Errorf("code %q", end.Code)
 	}
 }
 
