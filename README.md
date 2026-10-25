@@ -112,7 +112,7 @@ A journal holds one run and the resumes that continue it. The first event record
 | Observer      | `Observer`    | none                                   | `WithObserver`      |
 | Journal       | `Journal`     | none (`FileJournal` for files)         | `JournalTo` (per run) |
 
-Prompts are embedded Go templates. `ethan.DefaultTemplate(name)` returns a copy you can modify and pass to a component.
+Prompts are embedded Go templates. `ethan.DefaultTemplate(name)` returns a copy you can modify and pass to `ethan.WithTemplate(name, t)`; its documentation lists the data each template receives.
 
 Each agent can have a model of its own, from any provider:
 

@@ -105,7 +105,7 @@ type LLMPlanner struct {
 // Plan implements Planner.
 func (p *LLMPlanner) Plan(ctx context.Context, req PlanRequest) (Decision, error) {
 	var d Decision
-	err := generateJSON(ctx, p.Model, TagPlan, orDefault(p.Template, "plan"), req, decisionSchema, p.MaxOutputTokens, &d)
+	err := generateJSON(ctx, p.Model, TagPlan, templateFor(ctx, p.Template, "plan"), req, decisionSchema, p.MaxOutputTokens, &d)
 	return d, err
 }
 

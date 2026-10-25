@@ -19,7 +19,7 @@ type Engine struct {
 	synthesizer     Synthesizer
 	strategy        Strategy
 	limits          Limits
-	executeTemplate *template.Template
+	templates       map[string]*template.Template
 	observers       []Observer
 	notesInPrompt   int
 	maxPlans        int
@@ -62,9 +62,17 @@ func WithLimits(l Limits) Option {
 	return func(e *Engine) { e.limits = l }
 }
 
-// WithExecuteTemplate replaces the agents' default prompt template.
-func WithExecuteTemplate(t *template.Template) Option {
-	return func(e *Engine) { e.executeTemplate = t }
+// WithTemplate replaces the built-in template name (see DefaultTemplate)
+// throughout the engine: for its agents and for LLMPlanner, LLMEvaluator
+// and LLMSynthesizer values without a template of their own. New panics if
+// name is unknown or t does not define "system" and "user".
+func WithTemplate(name string, t *template.Template) Option {
+	return func(e *Engine) {
+		if e.templates == nil {
+			e.templates = map[string]*template.Template{}
+		}
+		e.templates[name] = t
+	}
 }
 
 // WithObserver adds an observer that receives the events of every Run.
@@ -109,8 +117,13 @@ func New(m Model, opts ...Option) *Engine {
 	if err := checkAgents(e.agents); err != nil {
 		panic("ethan: " + err.Error())
 	}
-	if e.executeTemplate == nil {
-		e.executeTemplate = DefaultTemplate("execute")
+	for name, t := range e.templates {
+		switch {
+		case !slices.Contains(templateNames, name):
+			panic(fmt.Sprintf("ethan: WithTemplate: unknown template %q", name))
+		case t == nil || t.Lookup("system") == nil || t.Lookup("user") == nil:
+			panic(fmt.Sprintf("ethan: WithTemplate: template %q does not define system and user", name))
+		}
 	}
 	if e.maxPlans < 1 {
 		e.maxPlans = 3

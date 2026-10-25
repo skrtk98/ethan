@@ -121,7 +121,7 @@ func (r *run) executeLeaf(ctx context.Context, t *Task, b Brief) error {
 		m = r.meter(agent.Model)
 	}
 	tools := append(slices.Clone(agent.Tools), noteTool{author: t.ID, post: r.post})
-	out, err := execute(ctx, m, r.engine.executeTemplate, agent, tools, b, r.engine.maxOutputTokens)
+	out, err := execute(ctx, m, templateFor(ctx, nil, "execute"), agent, tools, b, r.engine.maxOutputTokens)
 	if err != nil {
 		return fmt.Errorf("execute: %w", err)
 	}

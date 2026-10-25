@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"text/template"
 
 	"github.com/skrtk98/ethan"
 	"github.com/skrtk98/ethan/ethantest"
@@ -168,4 +169,24 @@ func TestStrategyCannotAdoptAForeignPlan(t *testing.T) {
 	if _, err := ethan.Replay(res.Events); err != nil {
 		t.Errorf("the journal cannot be replayed: %v", err)
 	}
+}
+
+func TestWithTemplateReplacesABuiltInPrompt(t *testing.T) {
+	plan := template.Must(ethan.DefaultTemplate("plan").Parse(`{{define "system"}}CUSTOM PLANNER{{end}}`))
+	m := ethantest.New().On(ethan.TagPlan, ethantest.Atomic()).On(ethan.TagExecute, ethantest.ReplyText("ok"))
+	if _, err := ethan.New(m, ethan.WithTemplate("plan", plan)).Run(context.Background(), "goal"); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Calls(ethan.TagPlan)[0].System; got != "CUSTOM PLANNER" {
+		t.Errorf("planner system prompt %q", got)
+	}
+	if got := m.Calls(ethan.TagExecute)[0].System; strings.Contains(got, "CUSTOM") {
+		t.Errorf("execute prompt changed too: %q", got)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("an unknown template name was accepted")
+		}
+	}()
+	ethan.New(m, ethan.WithTemplate("plans", plan))
 }

@@ -25,7 +25,7 @@ type LLMSynthesizer struct {
 
 // Synthesize implements Synthesizer.
 func (s *LLMSynthesizer) Synthesize(ctx context.Context, b Brief, results []SubtaskResult) (string, error) {
-	return generateText(ctx, s.Model, TagSynthesize, orDefault(s.Template, "synthesize"),
+	return generateText(ctx, s.Model, TagSynthesize, templateFor(ctx, s.Template, "synthesize"),
 		struct {
 			Brief   Brief
 			Results []SubtaskResult

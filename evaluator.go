@@ -43,7 +43,7 @@ type LLMEvaluator struct {
 // ScorePlan implements Evaluator.
 func (e *LLMEvaluator) ScorePlan(ctx context.Context, b Brief, p PlanProposal) (Score, error) {
 	var s Score
-	err := generateJSON(ctx, e.Model, TagScorePlan, orDefault(e.PlanTemplate, "score_plan"),
+	err := generateJSON(ctx, e.Model, TagScorePlan, templateFor(ctx, e.PlanTemplate, "score_plan"),
 		struct {
 			Brief Brief
 			Plan  PlanProposal
@@ -54,7 +54,7 @@ func (e *LLMEvaluator) ScorePlan(ctx context.Context, b Brief, p PlanProposal) (
 // ScoreResult implements Evaluator.
 func (e *LLMEvaluator) ScoreResult(ctx context.Context, b Brief, output string) (Score, error) {
 	var s Score
-	err := generateJSON(ctx, e.Model, TagScoreResult, orDefault(e.ResultTemplate, "score_result"),
+	err := generateJSON(ctx, e.Model, TagScoreResult, templateFor(ctx, e.ResultTemplate, "score_result"),
 		struct {
 			Brief  Brief
 			Output string
