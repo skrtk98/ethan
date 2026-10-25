@@ -97,7 +97,7 @@ if errors.Is(err, ethan.ErrLimitExceeded) {
 }
 ```
 
-A journal holds one run and the resumes that continue it. `ethan.Replay(events)` rebuilds the `Result` of a journal without calling any model. The research demo takes `-journal run.jsonl` and `-resume`.
+A journal holds one run and the resumes that continue it. The first event records the journal's format; `Replay` and `Resume` reject a journal written in a format other than `JournalFormat`, with an error wrapping `ErrJournalFormat`. `ethan.Replay(events)` rebuilds the `Result` of a journal without calling any model. The research demo takes `-journal run.jsonl` and `-resume`.
 
 ## Customizing
 

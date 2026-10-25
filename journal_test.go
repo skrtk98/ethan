@@ -74,7 +74,7 @@ func TestTaskUsageCountsItsOwnCalls(t *testing.T) {
 
 func TestTornLastLineIsDroppedOnReadAndAppend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "run.jsonl")
-	torn := `{"kind":"run_started","time":"2026-10-18T00:00:00Z","text":"goal"}` + "\n" + `{"kind":"task_sta`
+	torn := `{"kind":"run_started","time":"2026-10-18T00:00:00Z","text":"goal","format":1}` + "\n" + `{"kind":"task_sta`
 	if err := os.WriteFile(path, []byte(torn), 0o644); err != nil {
 		t.Fatal(err)
 	}

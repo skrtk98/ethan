@@ -138,7 +138,7 @@ func (e *Engine) Run(ctx context.Context, goal string, opts ...RunOption) (*Resu
 	defer cancel(nil)
 	r := e.newRun(goal, cancel, opts)
 	root := &Task{ID: "t0", Description: goal, Agent: e.agents[0].Name, Status: StatusPending}
-	r.emit(Event{Kind: EventRunStarted, Text: goal, Agent: root.Agent})
+	r.emit(Event{Kind: EventRunStarted, Text: goal, Agent: root.Agent, Format: JournalFormat})
 	return r.finish(ctx, root, r.solveGoal(ctx, root))
 }
 
@@ -148,7 +148,8 @@ func (e *Engine) Run(ctx context.Context, goal string, opts ...RunOption) (*Resu
 // that were running when the run stopped, is solved again. Limits apply to
 // the resumed run alone, while Result.Usage includes the earlier runs.
 //
-// To keep the journal complete, pass JournalTo with the same journal to
+// A journal written in another JournalFormat is rejected with an error
+// wrapping ErrJournalFormat. To keep the journal complete, pass JournalTo with the same journal to
 // append to. The returned Result holds the events of the earlier runs too.
 func (e *Engine) Resume(ctx context.Context, events []Event, opts ...RunOption) (*Result, error) {
 	s, err := replay(events)

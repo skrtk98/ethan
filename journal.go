@@ -10,6 +10,16 @@ import (
 	"os"
 )
 
+// JournalFormat is the version of the events' JSON form, which Replay and
+// Engine.Resume read back. It is raised when a change would make an
+// earlier journal read differently; Replay and Resume reject journals of
+// other formats rather than misread them.
+const JournalFormat = 1
+
+// ErrJournalFormat is returned by Replay and Engine.Resume for a journal
+// written in a format other than JournalFormat, or with none.
+var ErrJournalFormat = errors.New("ethan: unsupported journal format")
+
 // Journal records the events of a Run as they happen, so that the Run can
 // be traced and resumed after it stops (see Replay and Engine.Resume). The
 // engine appends one event at a time. When Append fails the Run is

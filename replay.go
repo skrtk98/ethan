@@ -30,6 +30,9 @@ func replay(events []Event) (*replayed, error) {
 	if len(events) == 0 || events[0].Kind != EventRunStarted {
 		return nil, errors.New("ethan: journal does not start with run_started")
 	}
+	if f := events[0].Format; f != JournalFormat {
+		return nil, fmt.Errorf("%w: %d (this version reads %d)", ErrJournalFormat, f, JournalFormat)
+	}
 	s := &replayed{root: &Task{ID: "t0", Description: events[0].Text, Agent: events[0].Agent, Status: StatusPending}, notes: []Note{}}
 	tasks := map[string]*Task{"t0": s.root}
 	plans := map[string]*Plan{}

@@ -9,7 +9,7 @@ import (
 type EventKind string
 
 const (
-	EventRunStarted   EventKind = "run_started" // Text is the goal
+	EventRunStarted   EventKind = "run_started" // Text is the goal; Format is JournalFormat
 	EventRunResumed   EventKind = "run_resumed"
 	EventRunDone      EventKind = "run_done"
 	EventRunFailed    EventKind = "run_failed"
@@ -48,6 +48,8 @@ type Event struct {
 	Plans []PlanProposal `json:"plans,omitempty"`
 	// Value is the output converted as Into asked, on run_done.
 	Value json.RawMessage `json:"value,omitempty"`
+	// Format is the JournalFormat the events follow, on run_started.
+	Format int `json:"format,omitempty"`
 	// Agent is the root task's agent, on run_started.
 	Agent string `json:"agent,omitempty"`
 	// Usage is the tokens used by one model call made for the task, on

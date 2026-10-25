@@ -148,11 +148,24 @@ func TestReplayRejectsForeignEvents(t *testing.T) {
 	if _, err := ethan.Replay([]ethan.Event{{Kind: ethan.EventTaskStarted, TaskID: "t0"}}); err == nil {
 		t.Error("events without run_started were accepted")
 	}
-	if _, err := ethan.Replay([]ethan.Event{{Kind: ethan.EventRunStarted, Text: "g"}, {Kind: ethan.EventTaskDone, TaskID: "t9"}}); err == nil {
+	if _, err := ethan.Replay([]ethan.Event{{Kind: ethan.EventRunStarted, Text: "g", Format: ethan.JournalFormat}, {Kind: ethan.EventTaskDone, TaskID: "t9"}}); err == nil {
 		t.Error("an unknown task was accepted")
 	}
-	if _, err := ethan.Replay([]ethan.Event{{Kind: ethan.EventRunStarted, Text: "g"}, {Kind: ethan.EventRunStarted, Text: "h"}}); err == nil {
+	if _, err := ethan.Replay([]ethan.Event{{Kind: ethan.EventRunStarted, Text: "g", Format: ethan.JournalFormat}, {Kind: ethan.EventRunStarted, Text: "h"}}); err == nil {
 		t.Error("two runs in one journal were accepted")
+	}
+}
+
+func TestJournalOfAnotherFormatIsRejected(t *testing.T) {
+	for _, format := range []int{0, ethan.JournalFormat + 1} {
+		events := []ethan.Event{{Kind: ethan.EventRunStarted, Text: "g", Format: format}}
+		if _, err := ethan.Replay(events); !errors.Is(err, ethan.ErrJournalFormat) {
+			t.Errorf("Replay of format %d: err = %v, want ErrJournalFormat", format, err)
+		}
+		engine := ethan.New(ethantest.New())
+		if _, err := engine.Resume(context.Background(), events); !errors.Is(err, ethan.ErrJournalFormat) {
+			t.Errorf("Resume of format %d: err = %v, want ErrJournalFormat", format, err)
+		}
 	}
 }
 
