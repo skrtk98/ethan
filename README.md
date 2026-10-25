@@ -88,7 +88,7 @@ Add `-provider openai` to use OpenAI, or `-provider ollama` to use a local Ollam
 ## Journal and resume
 
 ```go
-j, _ := ethan.NewJournal("run.jsonl") // fails if the file exists; CreateJournal appends
+j, _ := ethan.CreateJournal("run.jsonl") // fails if the file exists; OpenJournal appends
 engine := ethan.New(model, ethan.WithLimits(ethan.Limits{MaxTokens: 300_000}))
 res, err := engine.Run(ctx, goal, ethan.JournalTo(j))
 if errors.Is(err, ethan.ErrLimitExceeded) {

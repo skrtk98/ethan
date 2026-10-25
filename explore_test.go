@@ -593,7 +593,7 @@ func TestAPlanNamingAnUnknownAgentIsDropped(t *testing.T) {
 	m := ethantest.New().
 		On(ethan.TagPlan, ethantest.Decompose(
 			plan("typo", sub{ID: "a", Description: "A", Agent: "reseacher"}),
-			plan("known", sub{ID: "a", Description: "B", Agent: ethan.DefaultAgent.Name}, sub{ID: "b", Description: "C"}),
+			plan("known", sub{ID: "a", Description: "B", Agent: "generalist"}, sub{ID: "b", Description: "C"}),
 		)).
 		On(ethan.TagExecute, echoTask).
 		On(ethan.TagSynthesize, joinResults)

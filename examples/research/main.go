@@ -108,9 +108,9 @@ func main() {
 	}
 	if *journalPath != "" {
 		// A journal holds one run: a new run gets a file of its own.
-		open := ethan.NewJournal
+		open := ethan.CreateJournal
 		if *resume {
-			open = ethan.CreateJournal
+			open = ethan.OpenJournal
 		}
 		j, err := open(*journalPath)
 		if errors.Is(err, fs.ErrExist) {

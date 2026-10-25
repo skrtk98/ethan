@@ -238,6 +238,9 @@ func (r *run) explore(ctx context.Context, t *Task, b Brief, plans []*Plan) erro
 	if p == nil || p.Status != StatusDone {
 		return errors.New("strategy returned no successful plan")
 	}
+	if !slices.Contains(t.Plans, p) {
+		return errors.New("strategy returned a plan that is not one of the task's")
+	}
 	t.Chosen, t.Output, t.Score = p.ID, p.Output, p.ResultScore
 	r.emit(Event{Kind: EventPlanChosen, TaskID: t.ID, PlanID: p.ID, Score: p.ResultScore})
 	return nil

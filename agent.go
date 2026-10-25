@@ -6,7 +6,8 @@ import (
 )
 
 // Tool is a client-side capability an Agent can invoke.
-// Implementations must be safe for concurrent use.
+// Implementations must be safe for concurrent use. An error from Call, or a
+// panic in it, is reported to the model as the tool's result.
 type Tool interface {
 	Spec() ToolSpec
 	Call(ctx context.Context, input json.RawMessage) (string, error)
@@ -29,13 +30,17 @@ type Agent struct {
 	Instructions string
 	// Model overrides the engine's model for this agent.
 	Model Model
+	// Tools are the agent's tools. Their names must be unique, and "note" is
+	// taken: the engine adds a tool of that name for posting to the
+	// blackboard.
 	Tools []Tool
-	// MaxTurns bounds the tool-use loop. Zero means 10.
+	// MaxTurns bounds the tool-use loop. Zero means 10. A task whose agent
+	// has not answered after MaxTurns turns fails with ErrMaxTurns.
 	MaxTurns int
 }
 
-// DefaultAgent is used when no agents are registered.
-var DefaultAgent = Agent{
+// defaultAgent is used when no agents are registered.
+var defaultAgent = Agent{
 	Name:        "generalist",
 	Description: "General-purpose agent that can handle any task.",
 }

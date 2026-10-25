@@ -2,6 +2,7 @@ package ethan
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"text/template"
@@ -68,11 +69,22 @@ func callTool(ctx context.Context, tools map[string]Tool, c *ToolCall) *ToolResu
 	if !ok {
 		return &ToolResult{CallID: c.ID, Content: "unknown tool " + c.Name, IsError: true}
 	}
-	out, err := tool.Call(ctx, c.Input)
+	out, err := safeCall(ctx, tool, c.Input)
 	if err != nil {
 		return &ToolResult{CallID: c.ID, Content: err.Error(), IsError: true}
 	}
 	return &ToolResult{CallID: c.ID, Content: out}
+}
+
+// safeCall calls tool, turning a panic into an error, so that a faulty tool
+// fails its call rather than the process.
+func safeCall(ctx context.Context, tool Tool, input json.RawMessage) (out string, err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			err = fmt.Errorf("tool panicked: %v", v)
+		}
+	}()
+	return tool.Call(ctx, input)
 }
 
 func hasTool(tools []Tool, name string) bool {

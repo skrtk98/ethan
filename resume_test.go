@@ -26,7 +26,7 @@ func chain() *ethantest.Model {
 
 func TestResumeContinuesWhereTheRunStopped(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "run.jsonl")
-	j, err := ethan.CreateJournal(path)
+	j, err := ethan.OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}

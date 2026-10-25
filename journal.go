@@ -34,9 +34,9 @@ type FileJournal struct {
 	f *os.File
 }
 
-// NewJournal creates a journal for a new run at path, failing if the file
-// already exists, so that two runs cannot share a journal.
-func NewJournal(path string) (*FileJournal, error) {
+// CreateJournal creates a journal for a new run at path, failing if the
+// file already exists, so that two runs cannot share a journal.
+func CreateJournal(path string) (*FileJournal, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
@@ -44,12 +44,12 @@ func NewJournal(path string) (*FileJournal, error) {
 	return &FileJournal{f: f}, nil
 }
 
-// CreateJournal opens path for appending, creating it if needed. Appending
-// to an existing journal continues it, which is what Engine.Resume expects;
-// a last line cut short is removed first so that it does not run into the
-// next event. Use NewJournal for a new run, and do not resume the same
-// journal from two processes at once.
-func CreateJournal(path string) (*FileJournal, error) {
+// OpenJournal opens the journal at path for appending, creating it if
+// needed. Appending to an existing journal continues it, which is what
+// Engine.Resume expects; a last line cut short is removed first so that it
+// does not run into the next event. Use CreateJournal for a new run, and do
+// not resume the same journal from two processes at once.
+func OpenJournal(path string) (*FileJournal, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
@@ -101,7 +101,7 @@ func ReadJournal(path string) ([]Event, error) {
 
 // DecodeJournal reads events written as JSON Lines. An event is complete
 // once its line ends: a last line without a newline, cut short as the
-// process died, is ignored, as CreateJournal removes it.
+// process died, is ignored, as OpenJournal removes it.
 func DecodeJournal(r io.Reader) ([]Event, error) {
 	var events []Event
 	br := bufio.NewReader(r)

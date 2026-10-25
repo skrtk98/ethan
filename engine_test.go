@@ -3,6 +3,7 @@ package ethan_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -90,5 +91,81 @@ func TestAModelReturningNothingFailsTheRun(t *testing.T) {
 	}
 	if res.Root.Status != ethan.StatusFailed {
 		t.Errorf("root is %s", res.Root.Status)
+	}
+}
+
+type namedTool struct{ name string }
+
+func (t namedTool) Spec() ethan.ToolSpec { return ethan.ToolSpec{Name: t.name} }
+
+func (namedTool) Call(context.Context, json.RawMessage) (string, error) { panic("boom") }
+
+func TestNewPanicsOnMisconfiguration(t *testing.T) {
+	m := ethantest.New()
+	cases := map[string]func(){
+		"nil model":      func() { ethan.New(nil) },
+		"repeated agent": func() { ethan.New(m, ethan.WithAgents(ethan.Agent{Name: "a"}, ethan.Agent{Name: "a"})) },
+		"nil tool":       func() { ethan.New(m, ethan.WithAgents(ethan.Agent{Name: "a", Tools: []ethan.Tool{nil}})) },
+		"unnamed tool":   func() { ethan.New(m, ethan.WithAgents(ethan.Agent{Name: "a", Tools: []ethan.Tool{namedTool{}}})) },
+		"reserved name":  func() { ethan.New(m, ethan.WithAgents(ethan.Agent{Name: "a", Tools: []ethan.Tool{namedTool{"note"}}})) },
+		"repeated tool": func() {
+			ethan.New(m, ethan.WithAgents(ethan.Agent{Name: "a", Tools: []ethan.Tool{namedTool{"x"}, namedTool{"x"}}}))
+		},
+	}
+	for name, f := range cases {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: no panic", name)
+				}
+			}()
+			f()
+		}()
+	}
+}
+
+func TestPanickingToolFailsItsCallOnly(t *testing.T) {
+	m := ethantest.New().
+		On(ethan.TagPlan, ethantest.Atomic()).
+		On(ethan.TagExecute, ethantest.Sequence(
+			ethantest.Reply(ethantest.ToolCalls(ethan.ToolCall{ID: "c1", Name: "boom", Input: json.RawMessage(`{}`)})),
+			func(req ethan.Request) (*ethan.Response, error) {
+				r := req.Messages[len(req.Messages)-1].Parts[0].ToolResult
+				return ethantest.Text(fmt.Sprintf("%v %s", r.IsError, r.Content)), nil
+			},
+		))
+	agent := ethan.Agent{Name: "a", Tools: []ethan.Tool{namedTool{"boom"}}}
+	res, err := ethan.New(m, ethan.WithAgents(agent)).Run(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Output != "true tool panicked: boom" {
+		t.Errorf("Output = %q", res.Output)
+	}
+}
+
+func TestIntoNilFailsTheRun(t *testing.T) {
+	m := ethantest.New()
+	res, err := ethan.New(m).Run(context.Background(), "goal", ethan.Into[struct{ A string }](nil))
+	if err == nil || res == nil || len(m.Calls(ethan.TagPlan)) != 0 {
+		t.Errorf("err = %v, %d plan calls; want an error before any call", err, len(m.Calls(ethan.TagPlan)))
+	}
+}
+
+// foreignStrategy adopts a plan that belongs to no task.
+type foreignStrategy struct{}
+
+func (foreignStrategy) Explore(ctx context.Context, x ethan.Exploration) (*ethan.Plan, error) {
+	return &ethan.Plan{ID: "bogus", Status: ethan.StatusDone, Output: "x"}, nil
+}
+
+func TestStrategyCannotAdoptAForeignPlan(t *testing.T) {
+	m := ethantest.New().On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A"})))
+	res, err := ethan.New(m, ethan.WithStrategy(foreignStrategy{})).Run(context.Background(), "goal")
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if _, err := ethan.Replay(res.Events); err != nil {
+		t.Errorf("the journal cannot be replayed: %v", err)
 	}
 }

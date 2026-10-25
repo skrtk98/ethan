@@ -3,6 +3,7 @@ package ethan
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"slices"
 	"text/template"
@@ -28,10 +29,12 @@ type Engine struct {
 // Option configures an Engine.
 type Option func(*Engine)
 
-// WithAgents registers the agents subtasks can be assigned to. The first
-// agent is the default for unassigned or unknown names.
+// WithAgents registers the agents subtasks can be assigned to, replacing
+// any registered before. The first agent executes the goal and the subtasks
+// assigned to none; a plan assigning a subtask to an unknown agent is
+// dropped. Agent names must be unique.
 func WithAgents(agents ...Agent) Option {
-	return func(e *Engine) { e.agents = agents }
+	return func(e *Engine) { e.agents = slices.Clone(agents) }
 }
 
 // WithPlanner replaces the default LLMPlanner.
@@ -89,14 +92,22 @@ func WithMaxOutputTokens(n int) Option {
 }
 
 // New returns an Engine whose components default to LLM-backed
-// implementations using m.
+// implementations using m. It panics if m is nil or the agents are
+// misconfigured: names repeated, or tools that are nil, unnamed, repeated
+// within an agent or named "note".
 func New(m Model, opts ...Option) *Engine {
+	if m == nil {
+		panic("ethan: New with a nil Model")
+	}
 	e := &Engine{model: m, maxPlans: 3, notesInPrompt: 20, strategy: BeamStrategy{}}
 	for _, o := range opts {
 		o(e)
 	}
 	if len(e.agents) == 0 {
-		e.agents = []Agent{DefaultAgent}
+		e.agents = []Agent{defaultAgent}
+	}
+	if err := checkAgents(e.agents); err != nil {
+		panic("ethan: " + err.Error())
 	}
 	if e.executeTemplate == nil {
 		e.executeTemplate = DefaultTemplate("execute")
@@ -106,6 +117,33 @@ func New(m Model, opts ...Option) *Engine {
 	}
 	e.limits = e.limits.withDefaults()
 	return e
+}
+
+func checkAgents(agents []Agent) error {
+	names := map[string]bool{}
+	for _, a := range agents {
+		if names[a.Name] {
+			return fmt.Errorf("agent name %q is used twice", a.Name)
+		}
+		names[a.Name] = true
+		tools := map[string]bool{noteToolName: true}
+		for _, t := range a.Tools {
+			if t == nil {
+				return fmt.Errorf("agent %q has a nil tool", a.Name)
+			}
+			name := t.Spec().Name
+			switch {
+			case name == "":
+				return fmt.Errorf("agent %q has a tool without a name", a.Name)
+			case name == noteToolName:
+				return fmt.Errorf("agent %q has a tool named %q, which the engine adds itself", a.Name, name)
+			case tools[name]:
+				return fmt.Errorf("agent %q has two tools named %q", a.Name, name)
+			}
+			tools[name] = true
+		}
+	}
+	return nil
 }
 
 // Result is the outcome of a Run. It marshals to JSON as the Run's trace.

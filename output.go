@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 )
 
 // Into has the Run, or the Resume, end by converting the goal's output into
-// a value of type T, stored in *v and, as JSON, in Result.Value. The
+// a value of type T, stored in *value and, as JSON, in Result.Value. The
 // conversion is one more model call, made after the exploration finishes,
 // with the schema SchemaFor[T]; T must be a struct.
 //
@@ -22,6 +23,8 @@ func Into[T any](value *T) RunOption {
 		t := reflect.TypeFor[T]()
 		s, err := schemaOf(t, nil)
 		switch {
+		case value == nil:
+			o.err = errors.New("ethan: Into: nil pointer")
 		case t.Kind() != reflect.Struct:
 			o.err = fmt.Errorf("ethan: Into: %v is not a struct", t)
 		case err != nil:

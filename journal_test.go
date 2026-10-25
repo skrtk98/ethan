@@ -14,7 +14,7 @@ import (
 
 func TestJournalRecordsEveryEvent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "run.jsonl")
-	j, err := ethan.CreateJournal(path)
+	j, err := ethan.OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestTaskUsageCountsItsOwnCalls(t *testing.T) {
 }
 
 func TestLastLineWithoutNewlineIsNotAnEvent(t *testing.T) {
-	// Even if it parses: CreateJournal would remove it before appending.
+	// Even if it parses: OpenJournal would remove it before appending.
 	complete := `{"kind":"run_started","time":"2026-10-18T00:00:00Z","text":"goal","format":1}`
 	events, err := ethan.DecodeJournal(strings.NewReader(complete + "\n" + complete))
 	if err != nil || len(events) != 1 {
@@ -90,7 +90,7 @@ func TestTornLastLineIsDroppedOnReadAndAppend(t *testing.T) {
 	if events, err := ethan.ReadJournal(path); err != nil || len(events) != 1 {
 		t.Fatalf("read %d events, err %v; want the whole first line only", len(events), err)
 	}
-	j, err := ethan.CreateJournal(path)
+	j, err := ethan.OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,14 +130,14 @@ func TestJournalFailureCancelsTheRun(t *testing.T) {
 	}
 }
 
-func TestNewJournalRefusesAnExistingFile(t *testing.T) {
+func TestCreateJournalRefusesAnExistingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "run.jsonl")
-	j, err := ethan.NewJournal(path)
+	j, err := ethan.CreateJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	j.Close()
-	if _, err := ethan.NewJournal(path); !errors.Is(err, os.ErrExist) {
+	if _, err := ethan.CreateJournal(path); !errors.Is(err, os.ErrExist) {
 		t.Errorf("err = %v, want os.ErrExist", err)
 	}
 }

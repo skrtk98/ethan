@@ -17,7 +17,13 @@ type Strategy interface {
 }
 
 // Exploration is the handle a Strategy uses to act on one task's plans.
-// Its methods are safe to call concurrently for different plans.
+// Its methods are safe to call concurrently for different plans. A Strategy
+// may read a plan's fields once a method acting on that plan has returned,
+// and must not change them.
+//
+// Only the engine implements Exploration, and methods may be added to it.
+// A fake for testing a Strategy should embed Exploration, so that it keeps
+// compiling when they are.
 type Exploration interface {
 	Plans() []*Plan
 	// Depth is the depth of the task whose plans these are; the root is 0.
