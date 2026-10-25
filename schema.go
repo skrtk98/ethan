@@ -2,6 +2,7 @@ package ethan
 
 import (
 	"cmp"
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -25,9 +26,11 @@ import (
 //	}
 //
 // Structs, strings, booleans, numbers, slices, arrays, pointers and
-// time.Time are supported. Maps, interfaces and recursive types are not,
-// since a strict schema cannot describe them, and neither are field names
-// that embedded structs make ambiguous. The length of an array is not in
+// time.Time are supported, and types implementing encoding.TextMarshaler
+// are strings. Maps, interfaces and recursive types are not, since a strict
+// schema cannot describe them, and neither are types with their own
+// json.Marshaler, such as json.RawMessage, nor field names that embedded
+// structs make ambiguous. The length of an array is not in
 // the schema, as not every provider supports length constraints.
 func SchemaFor[T any]() (json.RawMessage, error) {
 	s, err := schemaOf(reflect.TypeFor[T](), nil)
@@ -38,18 +41,40 @@ func SchemaFor[T any]() (json.RawMessage, error) {
 }
 
 var (
-	timeType   = reflect.TypeFor[time.Time]()
-	numberType = reflect.TypeFor[json.Number]()
+	timeType          = reflect.TypeFor[time.Time]()
+	numberType        = reflect.TypeFor[json.Number]()
+	marshalerType     = reflect.TypeFor[json.Marshaler]()
+	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
 )
 
-// schemaOf builds the schema of t; seen holds the struct types being built,
-// to reject recursion.
+// implements reports whether t or *t implements iface, as encoding/json
+// checks for an addressable value.
+func implements(t, iface reflect.Type) bool {
+	return t.Implements(iface) || t.Kind() != reflect.Pointer && reflect.PointerTo(t).Implements(iface)
+}
+
+// schemaOf builds the schema of t; seen holds the types being built, to
+// reject recursion.
 func schemaOf(t reflect.Type, seen []reflect.Type) (map[string]any, error) {
 	switch t {
 	case timeType:
 		return map[string]any{"type": "string", "format": "date-time"}, nil
 	case numberType:
 		return map[string]any{"type": "number"}, nil
+	}
+	if t.Kind() != reflect.Pointer {
+		switch {
+		case implements(t, marshalerType):
+			return nil, fmt.Errorf("type %v encodes itself to JSON", t)
+		case implements(t, textMarshalerType):
+			return map[string]any{"type": "string"}, nil
+		}
+	}
+	if slices.Contains(seen, t) {
+		return nil, fmt.Errorf("recursive type %v", t)
+	}
+	if t.Name() != "" {
+		seen = append(seen, t) // a named slice or pointer type may refer to itself
 	}
 	switch t.Kind() {
 	case reflect.String:
@@ -77,11 +102,8 @@ func schemaOf(t reflect.Type, seen []reflect.Type) (map[string]any, error) {
 		}
 		return map[string]any{"type": "array", "items": items}, nil
 	case reflect.Struct:
-		if slices.Contains(seen, t) {
-			return nil, fmt.Errorf("recursive type %v", t)
-		}
 		var all []field
-		if err := collectFields(t, 0, append(seen, t), &all); err != nil {
+		if err := collectFields(t, 0, seen, &all); err != nil {
 			return nil, err
 		}
 		props := map[string]any{}

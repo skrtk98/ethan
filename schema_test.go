@@ -3,6 +3,8 @@ package ethan_test
 import (
 	"context"
 	"encoding/json"
+	"math/big"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -194,5 +196,35 @@ func TestSchemaForFollowsEncodingJSONForNumbersAndBadTags(t *testing.T) {
 	}
 	if !strings.Contains(string(s), `"n":{"type":"number"}`) || !strings.Contains(string(s), `"Bad":{"type":"integer"}`) {
 		t.Errorf("schema = %s", s)
+	}
+}
+
+type recursiveSlice []recursiveSlice
+
+func TestSchemaForFollowsCustomEncodingsAndNamedRecursion(t *testing.T) {
+	if _, err := ethan.SchemaFor[recursiveSlice](); err == nil || !strings.Contains(err.Error(), "recursive") {
+		t.Errorf("recursive slice: %v", err)
+	}
+	if _, err := ethan.SchemaFor[struct{ R []recursiveSlice }](); err == nil {
+		t.Error("a field of a recursive slice type was accepted")
+	}
+	for name, f := range map[string]func() error{
+		"json.RawMessage": func() error { _, err := ethan.SchemaFor[struct{ Raw json.RawMessage }](); return err },
+		"*big.Int":        func() error { _, err := ethan.SchemaFor[struct{ N *big.Int }](); return err },
+		"embedded time":   func() error { _, err := ethan.SchemaFor[struct{ time.Time }](); return err },
+	} {
+		if err := f(); err == nil || !strings.Contains(err.Error(), "encodes itself") {
+			t.Errorf("%s: err = %v, want a rejection", name, err)
+		}
+	}
+	s, err := ethan.SchemaFor[struct {
+		IP  net.IP  `json:"ip"`
+		Opt *net.IP `json:"opt"`
+	}]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(s), `"ip":{"type":"string"}`) || !strings.Contains(string(s), `"opt":{"anyOf":[{"type":"string"},{"type":"null"}]}`) {
+		t.Errorf("schema %s", s)
 	}
 }
