@@ -175,7 +175,9 @@ type Result struct {
 	Events []Event `json:"events"`
 }
 
-// WriteTrace writes r as indented JSON.
+// WriteTrace writes r as indented JSON, for people and tools to inspect.
+// Unlike the journal, whose events Replay reads back, the trace's form is
+// not versioned and may change.
 func (r *Result) WriteTrace(w io.Writer) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

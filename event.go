@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// EventKind classifies an Event.
+// EventKind classifies an Event. New kinds may be added.
 type EventKind string
 
 const (

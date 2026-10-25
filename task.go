@@ -1,6 +1,6 @@
 package ethan
 
-// Status is the lifecycle state of a Task or Plan.
+// Status is the lifecycle state of a Task or Plan. New states may be added.
 type Status string
 
 const (
@@ -54,15 +54,19 @@ type Score struct {
 }
 
 // Brief is everything a component needs to know about the task at hand.
+// Fields will be added to it rather than parameters to the interfaces that
+// take it.
 type Brief struct {
 	// Goal is the root task's description.
 	Goal string
 	// Path lists ancestor task descriptions from the root down to the parent.
 	Path []string
+	// Task is the description of the task at hand.
 	Task string
 	// Inputs are the outputs of the subtasks this task depends on.
 	Inputs []SubtaskResult
-	Notes  []Note
+	// Notes are the latest notes on the blackboard (see WithNotesInPrompt).
+	Notes []Note
 }
 
 // SubtaskResult is a finished subtask's description and output.

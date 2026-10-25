@@ -7,6 +7,9 @@ import (
 )
 
 // Evaluator scores plans before execution and results after it.
+//
+// The engine calls it concurrently for the tasks and plans it explores in
+// parallel, so implementations must be safe for concurrent use.
 type Evaluator interface {
 	ScorePlan(ctx context.Context, b Brief, p PlanProposal) (Score, error)
 	ScoreResult(ctx context.Context, b Brief, output string) (Score, error)

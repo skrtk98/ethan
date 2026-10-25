@@ -18,7 +18,8 @@ var (
 
 // Limits bounds the work of a Run. The engine checks them mechanically and
 // does not plan around them: how to spend a budget is the caller's concern.
-// Zero fields take their defaults.
+// Zero and negative fields take their defaults, except MaxTokens, where a
+// negative value means unlimited.
 type Limits struct {
 	// MaxDepth is the depth at which tasks are no longer decomposed but
 	// executed directly. The goal is at depth 0, so 1 lets the planner split

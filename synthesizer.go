@@ -7,6 +7,9 @@ import (
 
 // Synthesizer combines the results of a plan's subtasks into the output of
 // the task the plan decomposes.
+//
+// The engine calls it concurrently for the tasks and plans it explores in
+// parallel, so implementations must be safe for concurrent use.
 type Synthesizer interface {
 	Synthesize(ctx context.Context, b Brief, results []SubtaskResult) (string, error)
 }

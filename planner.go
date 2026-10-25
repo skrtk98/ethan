@@ -10,6 +10,9 @@ import (
 
 // Planner decides whether a task is executed directly or decomposed, and
 // proposes alternative plans for decomposition.
+//
+// The engine calls it concurrently for the tasks and plans it explores in
+// parallel, so implementations must be safe for concurrent use.
 type Planner interface {
 	Plan(ctx context.Context, req PlanRequest) (Decision, error)
 }

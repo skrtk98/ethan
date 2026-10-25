@@ -22,14 +22,17 @@ var ErrJournalFormat = errors.New("ethan: unsupported journal format")
 
 // Journal records the events of a Run as they happen, so that the Run can
 // be traced and resumed after it stops (see Replay and Engine.Resume). The
-// engine appends one event at a time. When Append fails the Run is
-// canceled: a journal with gaps cannot be resumed from.
+// engine appends the events of a Run one at a time; a Journal shared by
+// Runs that overlap must be safe for concurrent use, though a journal
+// should hold one run. When Append fails the Run is canceled: a journal
+// with gaps cannot be resumed from.
 type Journal interface {
 	Append(Event) error
 }
 
 // FileJournal is a Journal that appends events to a file as JSON Lines and
-// syncs each one to disk.
+// syncs each one to disk. Pass it to one Run, or to the Resumes that
+// continue it, at a time.
 type FileJournal struct {
 	f *os.File
 }

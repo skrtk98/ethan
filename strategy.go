@@ -10,6 +10,9 @@ import (
 
 // Strategy decides which candidate plans of a task to execute and which
 // result to adopt.
+//
+// The engine calls it concurrently for the tasks and plans it explores in
+// parallel, so implementations must be safe for concurrent use.
 type Strategy interface {
 	// Explore returns the plan whose output becomes the task's output, or an
 	// error if no plan succeeded.
