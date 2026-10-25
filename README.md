@@ -32,7 +32,7 @@ Requires Go 1.26 or later. The core module depends only on the standard library.
 |---|---|---|
 | Claude | `github.com/skrtk98/ethan/anthropic` | reads `ANTHROPIC_API_KEY` |
 | OpenAI | `github.com/skrtk98/ethan/openai` | Responses API; reads `OPENAI_API_KEY` |
-| Ollama and other Responses API servers | `github.com/skrtk98/ethan/openai` | `openai.WithBaseURL("http://localhost:11434/v1/")` |
+| Ollama and other Responses API servers | `github.com/skrtk98/ethan/openai` | `openai.WithBaseURL("http://localhost:11434/v1/")`, `openai.WithAPIKey("ollama")` |
 
 ## Quick start
 

@@ -2,7 +2,7 @@
 //
 // Servers that implement the Responses API, such as Ollama, work too:
 //
-//	openai.New(openai.WithBaseURL("http://localhost:11434/v1/"), openai.WithModel("gpt-oss:20b"))
+//	openai.New(openai.WithBaseURL("http://localhost:11434/v1/"), openai.WithAPIKey("ollama"), openai.WithModel("gpt-oss:20b"))
 package openai
 
 import (
@@ -56,8 +56,16 @@ func WithBaseURL(url string) Option {
 	return func(m *Model) { m.clientOpts = append(m.clientOpts, option.WithBaseURL(url)) }
 }
 
-// WithClientOptions configures the underlying SDK client, e.g. the API key
-// or retry count. By default the client reads OPENAI_API_KEY.
+// WithAPIKey sets the API key instead of reading OPENAI_API_KEY. Servers
+// such as Ollama ignore it, but setting one keeps a real key from being
+// sent to them.
+func WithAPIKey(key string) Option {
+	return func(m *Model) { m.clientOpts = append(m.clientOpts, option.WithAPIKey(key)) }
+}
+
+// WithClientOptions configures the underlying SDK client, e.g. the retry
+// count or HTTP client; options given more than once add up. They are the
+// SDK's types, so this option follows the SDK's major versions.
 func WithClientOptions(opts ...option.RequestOption) Option {
 	return func(m *Model) { m.clientOpts = append(m.clientOpts, opts...) }
 }

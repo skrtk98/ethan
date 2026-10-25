@@ -10,8 +10,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/openai/openai-go/v3/option"
-
 	"github.com/skrtk98/ethan"
 	"github.com/skrtk98/ethan/openai"
 )
@@ -27,7 +25,7 @@ func liveModels(t *testing.T) map[string]*openai.Model {
 	if id := os.Getenv("OLLAMA_MODEL"); id != "" {
 		// Ollama ignores the key; do not send it the OpenAI one.
 		models["ollama"] = openai.New(openai.WithBaseURL("http://localhost:11434/v1/"), openai.WithModel(id),
-			openai.WithClientOptions(option.WithAPIKey("ollama")))
+			openai.WithAPIKey("ollama"))
 	}
 	if len(models) == 0 {
 		t.Skip("set OPENAI_API_KEY or OLLAMA_MODEL")

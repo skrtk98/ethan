@@ -63,9 +63,20 @@ func WithoutCache() Option { return func(m *Model) { m.cache = false } }
 // available on the Claude API; disable them when targeting other platforms.
 func WithoutFallbacks() Option { return func(m *Model) { m.fallbacks = false } }
 
-// WithClientOptions configures the underlying SDK client, e.g. the API key,
-// base URL or retry count; options given more than once add up. By default
-// the client reads ANTHROPIC_API_KEY.
+// WithAPIKey sets the API key instead of reading ANTHROPIC_API_KEY.
+func WithAPIKey(key string) Option {
+	return func(m *Model) { m.clientOpts = append(m.clientOpts, option.WithAPIKey(key)) }
+}
+
+// WithBaseURL sends requests to another server implementing the Messages
+// API, such as a proxy.
+func WithBaseURL(url string) Option {
+	return func(m *Model) { m.clientOpts = append(m.clientOpts, option.WithBaseURL(url)) }
+}
+
+// WithClientOptions configures the underlying SDK client, e.g. the retry
+// count or HTTP client; options given more than once add up. They are the
+// SDK's types, so this option follows the SDK's major versions.
 func WithClientOptions(opts ...option.RequestOption) Option {
 	return func(m *Model) { m.clientOpts = append(m.clientOpts, opts...) }
 }

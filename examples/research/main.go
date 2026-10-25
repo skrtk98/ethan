@@ -22,8 +22,6 @@ import (
 	"os/signal"
 	"strings"
 
-	openaiopt "github.com/openai/openai-go/v3/option"
-
 	"github.com/skrtk98/ethan"
 	"github.com/skrtk98/ethan/anthropic"
 	"github.com/skrtk98/ethan/openai"
@@ -187,7 +185,7 @@ func models(provider, id, effort, baseURL string, searches int) (control, search
 		}
 		// Ollama ignores the key; do not send it the OpenAI one.
 		opts := []openai.Option{openai.WithBaseURL(baseURL), openai.WithModel(id),
-			openai.WithClientOptions(openaiopt.WithAPIKey("ollama"))}
+			openai.WithAPIKey("ollama")}
 		if effort != "" {
 			opts = append(opts, openai.WithEffort(effort))
 		}
