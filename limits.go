@@ -37,11 +37,16 @@ type Limits struct {
 	// provider does not report, is not counted. Each of those calls started
 	// below the limit, so the provider may bill up to MaxConcurrency calls'
 	// worth beyond MaxTokens; lower MaxConcurrency, or set a spending limit
-	// with the provider, to bound it more tightly. Zero means unlimited.
+	// with the provider, to bound it more tightly. Default
+	// DefaultMaxTokens, so that a Run left unconfigured cannot spend without
+	// bound; a negative value means unlimited.
 	MaxTokens int
 	// MaxConcurrency is the number of model calls in flight at once. Default 4.
 	MaxConcurrency int
 }
+
+// DefaultMaxTokens is the token limit of a Run whose Limits.MaxTokens is zero.
+const DefaultMaxTokens = 300_000
 
 func (l Limits) withDefaults() Limits {
 	if l.MaxDepth <= 0 {
@@ -49,6 +54,12 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.MaxTasks <= 0 {
 		l.MaxTasks = 40
+	}
+	switch {
+	case l.MaxTokens == 0:
+		l.MaxTokens = DefaultMaxTokens
+	case l.MaxTokens < 0:
+		l.MaxTokens = 0 // unlimited
 	}
 	if l.MaxConcurrency <= 0 {
 		l.MaxConcurrency = 4

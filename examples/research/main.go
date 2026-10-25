@@ -41,7 +41,7 @@ func main() {
 		effort      = flag.String("effort", "", "effort level: low, medium, high, xhigh or max")
 		maxDepth    = flag.Int("max-depth", 2, "depth at which tasks are no longer decomposed")
 		maxTasks    = flag.Int("max-tasks", 15, "tasks the run may start, leaves included")
-		maxTokens   = flag.Int("max-tokens", 1_000_000, "total token limit (0 = unlimited)")
+		maxTokens   = flag.Int("max-tokens", 1_000_000, "total token limit (negative = unlimited)")
 		concurrency = flag.Int("concurrency", 4, "model calls in flight at once")
 		plans       = flag.Int("plans", 3, "alternative plans proposed per task")
 		beam        = flag.Int("beam", 2, "plans executed in parallel at the root")

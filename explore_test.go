@@ -290,6 +290,19 @@ func TestTokenLimitStopsCallsOnceReached(t *testing.T) {
 	}
 }
 
+func TestTokenLimitDefaultsToDefaultMaxTokens(t *testing.T) {
+	big := ethantest.JSON(ethan.Decision{Atomic: true})
+	big.Usage = ethan.Usage{InputTokens: ethan.DefaultMaxTokens}
+	m := ethantest.New().On(ethan.TagPlan, ethantest.Reply(big)).On(ethan.TagExecute, echoTask)
+	if _, err := ethan.New(m).Run(context.Background(), "goal"); !errors.Is(err, ethan.ErrTokenLimit) {
+		t.Errorf("zero Limits: err = %v, want ErrTokenLimit", err)
+	}
+	m = ethantest.New().On(ethan.TagPlan, ethantest.Reply(big)).On(ethan.TagExecute, echoTask)
+	if _, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxTokens: -1})).Run(context.Background(), "goal"); err != nil {
+		t.Errorf("negative MaxTokens: err = %v, want no limit", err)
+	}
+}
+
 // blockingModel makes the execution of one task wait until its context is
 // canceled, closing started when it begins.
 type blockingModel struct {

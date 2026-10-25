@@ -8,7 +8,7 @@ Given a goal, ethan grows an AND-OR task tree at runtime:
 - A **plan** (AND node) splits the task into subtasks with dependencies. Independent subtasks run in parallel. When all of them finish, their results are synthesized into the task's result.
 - A **strategy** decides which plans to try. The default beam strategy scores the candidates, executes the best ones in parallel, adopts the best-scoring result and backtracks to the remaining plans on failure.
 - **Agents** with their own instructions, models and tools execute the leaves, and share findings through a per-run **blackboard**.
-- **Limits** bound depth, the number of tasks, tokens and concurrent model calls. They are checked mechanically: going beyond the task or token limit cancels the whole run with an error wrapping `ErrLimitExceeded`. How to spend a budget is left to the caller.
+- **Limits** bound depth, the number of tasks, tokens and concurrent model calls. They are checked mechanically: going beyond the task or token limit cancels the whole run with an error wrapping `ErrLimitExceeded`. The token limit defaults to `DefaultMaxTokens` (300,000), so that a run left unconfigured cannot spend without bound; a negative `MaxTokens` lifts it. How to spend a budget is left to the caller.
 - Every step is reported as an **event**. A **journal** records the events as they happen; `Replay` rebuilds the explored tree from it, and `Engine.Resume` continues a run that stopped, reusing every finished task, decision and score.
 
 ### Scope
