@@ -73,7 +73,7 @@ func (r *run) convert(ctx context.Context, root *Task) error {
 	r.value = nil
 	var raw json.RawMessage
 	err := generateJSON(ctx, r.model, TagFormat, orDefault(nil, "format"), struct{ Goal, Result string }{r.goal, root.Output},
-		o.schema, r.engine.maxTokens, &raw)
+		o.schema, r.engine.maxOutputTokens, &raw)
 	if err != nil {
 		return fmt.Errorf("format: %w", err)
 	}

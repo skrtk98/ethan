@@ -293,6 +293,19 @@ func TestTokenLimitStopsCallsOnceReached(t *testing.T) {
 	}
 }
 
+func TestAnswerArrivingAfterCancellationIsNotUsed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m := ethantest.New().On(ethan.TagPlan, ethantest.Atomic()).
+		On(ethan.TagExecute, func(req ethan.Request) (*ethan.Response, error) {
+			cancel() // the provider answers although the run was canceled
+			return echoTask(req)
+		})
+	res, err := ethan.New(m).Run(ctx, "goal")
+	if !errors.Is(err, context.Canceled) || res.Root.Status == ethan.StatusDone {
+		t.Errorf("err = %v, root %s; want canceled and not done", err, res.Root.Status)
+	}
+}
+
 func TestCanceledRunIsCodedCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := ethantest.New().On(ethan.TagPlan, func(ethan.Request) (*ethan.Response, error) {

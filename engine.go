@@ -22,7 +22,7 @@ type Engine struct {
 	observers       []Observer
 	notesInPrompt   int
 	maxPlans        int
-	maxTokens       int
+	maxOutputTokens int
 }
 
 // Option configures an Engine.
@@ -85,7 +85,7 @@ func WithMaxPlans(n int) Option {
 // model call. Default 16000. It applies to LLMPlanner, LLMEvaluator and
 // LLMSynthesizer values whose own limit is zero.
 func WithMaxOutputTokens(n int) Option {
-	return func(e *Engine) { e.maxTokens = n }
+	return func(e *Engine) { e.maxOutputTokens = n }
 }
 
 // New returns an Engine whose components default to LLM-backed

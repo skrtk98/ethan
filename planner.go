@@ -96,14 +96,16 @@ type LLMPlanner struct {
 	// a Run, the calls count against its Limits whichever model makes them.
 	Model Model
 	// Template overrides DefaultTemplate("plan").
-	Template  *template.Template
-	MaxTokens int
+	Template *template.Template
+	// MaxOutputTokens bounds the output tokens, thinking included, of each
+	// call; zero means the engine's WithMaxOutputTokens within a Run.
+	MaxOutputTokens int
 }
 
 // Plan implements Planner.
 func (p *LLMPlanner) Plan(ctx context.Context, req PlanRequest) (Decision, error) {
 	var d Decision
-	err := generateJSON(ctx, p.Model, TagPlan, orDefault(p.Template, "plan"), req, decisionSchema, p.MaxTokens, &d)
+	err := generateJSON(ctx, p.Model, TagPlan, orDefault(p.Template, "plan"), req, decisionSchema, p.MaxOutputTokens, &d)
 	return d, err
 }
 
@@ -118,11 +120,11 @@ func generateJSON(ctx context.Context, m Model, tag string, t *template.Template
 		return err
 	}
 	resp, err := m.Generate(ctx, Request{
-		Tag:       tag,
-		System:    system,
-		Messages:  []Message{UserText(user)},
-		MaxTokens: maxOutputFor(ctx, maxTokens),
-		Output:    schema,
+		Tag:             tag,
+		System:          system,
+		Messages:        []Message{UserText(user)},
+		MaxOutputTokens: maxOutputFor(ctx, maxTokens),
+		Output:          schema,
 	})
 	if err != nil {
 		return err
@@ -143,10 +145,10 @@ func generateText(ctx context.Context, m Model, tag string, t *template.Template
 		return "", err
 	}
 	resp, err := m.Generate(ctx, Request{
-		Tag:       tag,
-		System:    system,
-		Messages:  []Message{UserText(user)},
-		MaxTokens: maxOutputFor(ctx, maxTokens),
+		Tag:             tag,
+		System:          system,
+		Messages:        []Message{UserText(user)},
+		MaxOutputTokens: maxOutputFor(ctx, maxTokens),
 	})
 	if err != nil {
 		return "", err

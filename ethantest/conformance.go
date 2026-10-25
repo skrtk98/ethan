@@ -44,7 +44,7 @@ func TestModel(t *testing.T, fake Fake) {
 	t.Run("text", func(t *testing.T) {
 		m, seen := fake(t, []Turn{{Text: "hello", Usage: usage}})
 		resp, err := m.Generate(context.Background(), ethan.Request{
-			System: "be brief", Messages: []ethan.Message{ethan.UserText("hi")}, MaxTokens: 100,
+			System: "be brief", Messages: []ethan.Message{ethan.UserText("hi")}, MaxOutputTokens: 100,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -61,7 +61,7 @@ func TestModel(t *testing.T, fake Fake) {
 	t.Run("structured output", func(t *testing.T) {
 		m, seen := fake(t, []Turn{{Text: `{"value":1}`, Usage: usage}})
 		resp, err := m.Generate(context.Background(), ethan.Request{
-			Messages: []ethan.Message{ethan.UserText("rate")}, MaxTokens: 100,
+			Messages: []ethan.Message{ethan.UserText("rate")}, MaxOutputTokens: 100,
 			Output: &ethan.OutputSchema{Name: "score", Schema: json.RawMessage(
 				`{"type":"object","properties":{"value":{"type":"number"}},"required":["value"],"additionalProperties":false}`)},
 		})
@@ -80,9 +80,9 @@ func TestModel(t *testing.T, fake Fake) {
 		call := ethan.ToolCall{ID: "call-1", Name: "lookup", Input: json.RawMessage(`{"q":"x"}`)}
 		m, seen := fake(t, []Turn{{ToolCalls: []ethan.ToolCall{call}, Usage: usage}, {Text: "found", Usage: usage}})
 		req := ethan.Request{
-			Messages:  []ethan.Message{ethan.UserText("find x")},
-			Tools:     []ethan.ToolSpec{{Name: "lookup", InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`)}},
-			MaxTokens: 100,
+			Messages:        []ethan.Message{ethan.UserText("find x")},
+			Tools:           []ethan.ToolSpec{{Name: "lookup", InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`)}},
+			MaxOutputTokens: 100,
 		}
 		resp, err := m.Generate(context.Background(), req)
 		if err != nil {
@@ -120,14 +120,25 @@ func TestModel(t *testing.T, fake Fake) {
 		}
 	})
 
+	t.Run("truncated text is an error", func(t *testing.T) {
+		m, _ := fake(t, []Turn{{Text: "the report beg", Usage: usage, Truncated: true}})
+		resp, err := m.Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("report")}, MaxOutputTokens: 5})
+		if !errors.Is(err, ethan.ErrTruncated) {
+			t.Errorf("err = %v, want ErrTruncated", err)
+		}
+		if resp == nil || resp.Usage != usage {
+			t.Errorf("response %+v, want usage %+v", resp, usage)
+		}
+	})
+
 	t.Run("truncated structured output keeps usage", func(t *testing.T) {
 		m, _ := fake(t, []Turn{{Text: `{"val`, Usage: usage, Truncated: true}})
 		resp, err := m.Generate(context.Background(), ethan.Request{
-			Messages: []ethan.Message{ethan.UserText("rate")}, MaxTokens: 5,
+			Messages: []ethan.Message{ethan.UserText("rate")}, MaxOutputTokens: 5,
 			Output: &ethan.OutputSchema{Name: "score", Schema: json.RawMessage(`{"type":"object"}`)},
 		})
-		if err == nil {
-			t.Fatal("no error")
+		if !errors.Is(err, ethan.ErrTruncated) {
+			t.Errorf("err = %v, want ErrTruncated", err)
 		}
 		if resp == nil || resp.Usage != usage {
 			t.Errorf("response %+v, want usage %+v", resp, usage)
@@ -139,11 +150,11 @@ func TestModel(t *testing.T, fake Fake) {
 		call := ethan.ToolCall{ID: "call-1", Name: "lookup", Input: json.RawMessage(`{"q":"x"}`)}
 		m, _ := fake(t, []Turn{{ToolCalls: []ethan.ToolCall{call}, Usage: usage, Truncated: true}})
 		resp, err := m.Generate(context.Background(), ethan.Request{
-			Messages: []ethan.Message{ethan.UserText("find x")}, MaxTokens: 5,
+			Messages: []ethan.Message{ethan.UserText("find x")}, MaxOutputTokens: 5,
 			Tools: []ethan.ToolSpec{{Name: "lookup", InputSchema: json.RawMessage(`{"type":"object"}`)}},
 		})
-		if err == nil {
-			t.Fatal("no error")
+		if !errors.Is(err, ethan.ErrTruncated) {
+			t.Errorf("err = %v, want ErrTruncated", err)
 		}
 		if resp == nil || resp.Usage != usage {
 			t.Errorf("response %+v, want usage %+v", resp, usage)
@@ -152,7 +163,7 @@ func TestModel(t *testing.T, fake Fake) {
 
 	t.Run("API error", func(t *testing.T) {
 		m, _ := fake(t, []Turn{{Fail: true}})
-		if _, err := m.Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("hi")}, MaxTokens: 10}); err == nil {
+		if _, err := m.Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("hi")}, MaxOutputTokens: 10}); err == nil {
 			t.Error("no error")
 		}
 	})
@@ -161,7 +172,7 @@ func TestModel(t *testing.T, fake Fake) {
 		m, _ := fake(t, []Turn{{Text: "too late"}})
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if _, err := m.Generate(ctx, ethan.Request{Messages: []ethan.Message{ethan.UserText("hi")}, MaxTokens: 10}); !errors.Is(err, context.Canceled) {
+		if _, err := m.Generate(ctx, ethan.Request{Messages: []ethan.Message{ethan.UserText("hi")}, MaxOutputTokens: 10}); !errors.Is(err, context.Canceled) {
 			t.Errorf("err = %v, want context.Canceled", err)
 		}
 	})

@@ -35,7 +35,9 @@ type LLMEvaluator struct {
 	// and DefaultTemplate("score_result").
 	PlanTemplate   *template.Template
 	ResultTemplate *template.Template
-	MaxTokens      int
+	// MaxOutputTokens bounds the output tokens, thinking included, of each
+	// call; zero means the engine's WithMaxOutputTokens within a Run.
+	MaxOutputTokens int
 }
 
 // ScorePlan implements Evaluator.
@@ -45,7 +47,7 @@ func (e *LLMEvaluator) ScorePlan(ctx context.Context, b Brief, p PlanProposal) (
 		struct {
 			Brief Brief
 			Plan  PlanProposal
-		}{b, p}, scoreSchema, e.MaxTokens, &s)
+		}{b, p}, scoreSchema, e.MaxOutputTokens, &s)
 	return clamp(s), err
 }
 
@@ -56,7 +58,7 @@ func (e *LLMEvaluator) ScoreResult(ctx context.Context, b Brief, output string) 
 		struct {
 			Brief  Brief
 			Output string
-		}{b, output}, scoreSchema, e.MaxTokens, &s)
+		}{b, output}, scoreSchema, e.MaxOutputTokens, &s)
 	return clamp(s), err
 }
 

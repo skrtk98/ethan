@@ -8,7 +8,6 @@ package openai
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -22,9 +21,6 @@ import (
 
 // DefaultModel is the model used when none is configured.
 const DefaultModel = "gpt-5.5"
-
-// ErrRefused is returned when the model declines a request.
-var ErrRefused = errors.New("openai: request refused")
 
 // Model is an ethan.Model backed by the Responses API. It keeps no state on
 // the server: each request carries the whole conversation, and reasoning is
@@ -77,8 +73,8 @@ func New(opts ...Option) *Model {
 }
 
 // Generate implements ethan.Model. When a call fails after tokens were
-// spent (a refusal, truncated structured output), the returned Response
-// carries their Usage.
+// spent (a refusal, a truncated response), the returned Response carries
+// their Usage. A Request whose MaxOutputTokens is zero sets no limit.
 func (m *Model) Generate(ctx context.Context, req ethan.Request) (*ethan.Response, error) {
 	params, err := m.params(req)
 	if err != nil {
@@ -93,22 +89,16 @@ func (m *Model) Generate(ctx context.Context, req ethan.Request) (*ethan.Respons
 	out.Parts = parts(resp.Output)
 
 	if refusal := refusalOf(resp.Output); refusal != "" {
-		return out, fmt.Errorf("%w: %s", ErrRefused, refusal)
+		return out, fmt.Errorf("openai: %w: %s", ethan.ErrRefused, refusal)
 	}
 	switch resp.Status {
 	case responses.ResponseStatusCompleted:
 	case responses.ResponseStatusIncomplete:
 		switch reason := resp.IncompleteDetails.Reason; reason {
 		case "content_filter":
-			return out, fmt.Errorf("%w: content filter", ErrRefused)
+			return out, fmt.Errorf("openai: %w: content filter", ethan.ErrRefused)
 		case "max_output_tokens":
-			if req.Output != nil {
-				return out, fmt.Errorf("openai: structured output truncated at max_output_tokens (%d)", req.MaxTokens)
-			}
-			if len(out.ToolCalls()) > 0 {
-				// The last call's arguments may be cut short.
-				return out, fmt.Errorf("openai: tool call truncated at max_output_tokens (%d)", req.MaxTokens)
-			}
+			return out, fmt.Errorf("openai: %w (max_output_tokens %d)", ethan.ErrTruncated, req.MaxOutputTokens)
 		default:
 			return out, fmt.Errorf("openai: response incomplete: %s", reason)
 		}
@@ -129,8 +119,8 @@ func (m *Model) params(req ethan.Request) (responses.ResponseNewParams, error) {
 		// conversation to carry over between the turns of a tool loop.
 		Include: []responses.ResponseIncludable{responses.ResponseIncludableReasoningEncryptedContent},
 	}
-	if req.MaxTokens > 0 {
-		p.MaxOutputTokens = param.NewOpt(int64(req.MaxTokens))
+	if req.MaxOutputTokens > 0 {
+		p.MaxOutputTokens = param.NewOpt(int64(req.MaxOutputTokens))
 	}
 	if req.System != "" {
 		p.Instructions = param.NewOpt(req.System)
@@ -227,6 +217,9 @@ func parts(output []responses.ResponseOutputItemUnion) []ethan.Part {
 				if c.Type == "output_text" {
 					b.WriteString(c.Text)
 				}
+			}
+			if b.Len() == 0 {
+				continue // nothing to show or to send back
 			}
 			p.Text = b.String()
 		case "function_call":

@@ -150,7 +150,7 @@ func TestRequestIsStatelessAndKeepsReasoning(t *testing.T) {
 		response("completed", "", ethantest.DefaultUsage, textItem("done")),
 	}}
 	m := newModel(t, f, openai.WithEffort("low"))
-	req := ethan.Request{Messages: []ethan.Message{ethan.UserText("go")}, MaxTokens: 100,
+	req := ethan.Request{Messages: []ethan.Message{ethan.UserText("go")}, MaxOutputTokens: 100,
 		Tools: []ethan.ToolSpec{{Name: "lookup", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
 
 	first, err := m.Generate(context.Background(), req)
@@ -190,7 +190,7 @@ func TestRequestIsStatelessAndKeepsReasoning(t *testing.T) {
 func TestStructuredOutputIsStrictAndNotSearched(t *testing.T) {
 	f := &fakeAPI{responses: []string{response("completed", "", ethantest.DefaultUsage, textItem(`{}`))}}
 	_, err := newModel(t, f, openai.WithWebSearch(3)).Generate(context.Background(), ethan.Request{
-		Messages: []ethan.Message{ethan.UserText("rate")}, MaxTokens: 100,
+		Messages: []ethan.Message{ethan.UserText("rate")}, MaxOutputTokens: 100,
 		Output: &ethan.OutputSchema{Name: "score", Schema: json.RawMessage(`{"type":"object"}`)},
 	})
 	if err != nil {
@@ -212,7 +212,7 @@ func TestWebSearch(t *testing.T) {
 		textItem("answer"),
 	)}}
 	resp, err := newModel(t, f, openai.WithWebSearch(3)).Generate(context.Background(), ethan.Request{
-		Messages: []ethan.Message{ethan.UserText("search")}, MaxTokens: 100,
+		Messages: []ethan.Message{ethan.UserText("search")}, MaxOutputTokens: 100,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -230,8 +230,8 @@ func TestRefusal(t *testing.T) {
 	refusal := map[string]any{"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
 		"content": []any{map[string]any{"type": "refusal", "refusal": "I can't help with that."}}}
 	f := &fakeAPI{responses: []string{response("completed", "", ethantest.DefaultUsage, refusal)}}
-	resp, err := newModel(t, f).Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("x")}, MaxTokens: 10})
-	if !errors.Is(err, openai.ErrRefused) || !strings.Contains(err.Error(), "can't help") {
+	resp, err := newModel(t, f).Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("x")}, MaxOutputTokens: 10})
+	if !errors.Is(err, ethan.ErrRefused) || !strings.Contains(err.Error(), "can't help") {
 		t.Errorf("err = %v", err)
 	}
 	if resp == nil || resp.Usage != ethantest.DefaultUsage {
@@ -242,8 +242,8 @@ func TestRefusal(t *testing.T) {
 func TestReplayingAnotherProvidersPartFails(t *testing.T) {
 	f := &fakeAPI{}
 	_, err := newModel(t, f).Generate(context.Background(), ethan.Request{
-		Messages:  []ethan.Message{{Role: ethan.RoleAssistant, Parts: []ethan.Part{{Raw: struct{}{}}}}},
-		MaxTokens: 10,
+		Messages:        []ethan.Message{{Role: ethan.RoleAssistant, Parts: []ethan.Part{{Raw: struct{}{}}}}},
+		MaxOutputTokens: 10,
 	})
 	if err == nil || len(f.bodies) != 0 {
 		t.Errorf("err = %v after %d requests", err, len(f.bodies))

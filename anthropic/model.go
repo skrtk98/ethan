@@ -2,9 +2,9 @@
 package anthropic
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -18,8 +18,9 @@ import (
 // DefaultModel is the model used when none is configured.
 const DefaultModel = "claude-sonnet-5-5"
 
-// ErrRefused is returned when the model declines a request.
-var ErrRefused = errors.New("anthropic: request refused")
+// DefaultMaxOutputTokens is sent as max_tokens, which the API requires, for
+// a Request whose MaxOutputTokens is zero.
+const DefaultMaxOutputTokens = 16000
 
 // maxContinuations bounds how often a paused server-side tool loop is resumed.
 const maxContinuations = 5
@@ -28,6 +29,7 @@ const maxContinuations = 5
 // It is safe for concurrent use.
 type Model struct {
 	client        sdk.Client
+	clientOpts    []option.RequestOption
 	model         string
 	effort        string
 	webSearch     bool
@@ -62,9 +64,10 @@ func WithoutCache() Option { return func(m *Model) { m.cache = false } }
 func WithoutFallbacks() Option { return func(m *Model) { m.fallbacks = false } }
 
 // WithClientOptions configures the underlying SDK client, e.g. the API key,
-// base URL or retry count. By default the client reads ANTHROPIC_API_KEY.
+// base URL or retry count; options given more than once add up. By default
+// the client reads ANTHROPIC_API_KEY.
 func WithClientOptions(opts ...option.RequestOption) Option {
-	return func(m *Model) { m.client = sdk.NewClient(opts...) }
+	return func(m *Model) { m.clientOpts = append(m.clientOpts, opts...) }
 }
 
 // New returns a Model.
@@ -73,15 +76,13 @@ func New(opts ...Option) *Model {
 	for _, o := range opts {
 		o(m)
 	}
-	if m.client.Options == nil {
-		m.client = sdk.NewClient()
-	}
+	m.client = sdk.NewClient(m.clientOpts...)
 	return m
 }
 
 // Generate implements ethan.Model. When a call fails after tokens were
-// spent (a refusal, truncated structured output, an error while resuming a
-// paused turn), the returned Response carries their Usage.
+// spent (a refusal, a truncated response, an error while resuming a paused
+// turn), the returned Response carries their Usage.
 func (m *Model) Generate(ctx context.Context, req ethan.Request) (*ethan.Response, error) {
 	params, err := m.params(req)
 	if err != nil {
@@ -102,15 +103,9 @@ func (m *Model) Generate(ctx context.Context, req ethan.Request) (*ethan.Respons
 			params.Messages = append(params.Messages, msg.ToParam())
 			continue
 		case sdk.BetaStopReasonRefusal:
-			return out, fmt.Errorf("%w: %s", ErrRefused, msg.StopDetails.Category)
+			return out, fmt.Errorf("anthropic: %w: %s", ethan.ErrRefused, msg.StopDetails.Category)
 		case sdk.BetaStopReasonMaxTokens:
-			if req.Output != nil {
-				return out, fmt.Errorf("anthropic: structured output truncated at max_tokens (%d)", req.MaxTokens)
-			}
-			if len(out.ToolCalls()) > 0 {
-				// The last call's input may be cut short.
-				return out, fmt.Errorf("anthropic: tool call truncated at max_tokens (%d)", req.MaxTokens)
-			}
+			return out, fmt.Errorf("anthropic: %w (max_tokens %d)", ethan.ErrTruncated, params.MaxTokens)
 		}
 		if req.Output != nil {
 			out.Output = json.RawMessage(out.Text())
@@ -123,7 +118,7 @@ func (m *Model) Generate(ctx context.Context, req ethan.Request) (*ethan.Respons
 func (m *Model) params(req ethan.Request) (sdk.BetaMessageNewParams, error) {
 	p := sdk.BetaMessageNewParams{
 		Model:     m.model,
-		MaxTokens: int64(req.MaxTokens),
+		MaxTokens: int64(cmp.Or(req.MaxOutputTokens, DefaultMaxOutputTokens)),
 	}
 	if req.System != "" {
 		p.System = []sdk.BetaTextBlockParam{{Text: req.System}}
@@ -226,6 +221,9 @@ func parts(content []sdk.BetaContentBlockUnion) []ethan.Part {
 		p := ethan.Part{Raw: block.ToParam()}
 		switch b := block.AsAny().(type) {
 		case sdk.BetaTextBlock:
+			if b.Text == "" {
+				continue // the API rejects empty text blocks sent back
+			}
 			p.Text = b.Text
 		case sdk.BetaToolUseBlock:
 			p.ToolCall = &ethan.ToolCall{ID: b.ID, Name: b.Name, Input: json.RawMessage(b.JSON.Input.Raw())}

@@ -3,6 +3,7 @@ package ethan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -11,10 +12,20 @@ import (
 //
 // Generate may return a non-nil Response together with an error; its Usage
 // then reports the tokens consumed before the failure, and nothing else in
-// it is meaningful.
+// it is meaningful. A response cut off at MaxOutputTokens is such a failure,
+// with an error wrapping ErrTruncated, and so is a refusal, with ErrRefused:
+// the engine never takes either for a finished answer.
 type Model interface {
 	Generate(ctx context.Context, req Request) (*Response, error)
 }
+
+var (
+	// ErrTruncated is returned by a Model whose response reached
+	// Request.MaxOutputTokens before it was complete.
+	ErrTruncated = errors.New("ethan: response truncated at the output token limit")
+	// ErrRefused is returned by a Model whose model declined the request.
+	ErrRefused = errors.New("ethan: request refused")
+)
 
 // Tags identify which component issued a Request. Adapters may ignore them;
 // they exist for usage accounting, tracing and scripted test models.
@@ -29,11 +40,16 @@ const (
 
 // Request is a single model invocation.
 type Request struct {
-	Tag       string
-	System    string
-	Messages  []Message
-	Tools     []ToolSpec
-	MaxTokens int
+	// Tag is one of the Tag constants, naming the component that calls.
+	Tag string
+	// System is the system prompt.
+	System   string
+	Messages []Message
+	// Tools are the client-side tools the model may call.
+	Tools []ToolSpec
+	// MaxOutputTokens bounds the output tokens, thinking included; zero
+	// means the adapter's default.
+	MaxOutputTokens int
 	// Output, when set, asks the model for a JSON value matching the schema
 	// instead of free text. The value is returned in Response.Output.
 	Output *OutputSchema

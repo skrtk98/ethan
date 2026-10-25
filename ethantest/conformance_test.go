@@ -49,7 +49,7 @@ func (m *memoryModel) Generate(ctx context.Context, req ethan.Request) (*ethan.R
 	}
 	resp := &ethan.Response{Usage: turn.Usage}
 	if turn.Truncated {
-		return resp, errors.New("output token limit reached")
+		return resp, ethan.ErrTruncated
 	}
 	if turn.Text != "" {
 		resp.Parts = append(resp.Parts, ethan.Part{Text: turn.Text})

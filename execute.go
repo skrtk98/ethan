@@ -37,11 +37,11 @@ func execute(ctx context.Context, m Model, t *template.Template, agent Agent, to
 	msgs := []Message{UserText(user)}
 	for range maxTurns {
 		resp, err := m.Generate(ctx, Request{
-			Tag:       TagExecute,
-			System:    system,
-			Messages:  msgs,
-			Tools:     specs,
-			MaxTokens: maxTokensOr(maxTokens),
+			Tag:             TagExecute,
+			System:          system,
+			Messages:        msgs,
+			Tools:           specs,
+			MaxOutputTokens: maxTokensOr(maxTokens),
 		})
 		if err != nil {
 			return "", err

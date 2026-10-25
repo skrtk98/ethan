@@ -20,7 +20,7 @@
 - 状態を持たない。`store=false` とし、会話の履歴は毎回送る。推論の中身は `reasoning.encrypted_content` で受け取り、出力項目ごと `Part.Raw` に保持して送り返す。
 - 構造化出力は `text.format` の JSON スキーマを strict モードで使う。コアのスキーマは strict の条件を満たしている。クライアント側ツールは strict にしない。利用者のスキーマが条件を満たすとは限らないためである。
 - 失敗したツールの結果は、出力の先頭に `error: ` を付けて渡す（Responses API にはエラーの印がない）。
-- 拒否（`refusal`、`content_filter`）は `ErrRefused` を返す。
+- 拒否（`refusal`、`content_filter`）は `ethan.ErrRefused` を包んだエラーを返す。出力の上限で切れた応答は、テキストでも構造化出力でもツール呼び出しでも、`ethan.ErrTruncated` を包んだエラーと使用量を返す。エンジンはどちらも完成した答えとして扱わない。`Request.MaxOutputTokens` が 0 のときはアダプタの既定値に任せる。
 - Web 検索の回数の上限には `max_tool_calls` を使う。これはサーバー側ツールの呼び出し全体に効く。
 
 ## モジュール構成

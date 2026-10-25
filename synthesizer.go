@@ -17,8 +17,10 @@ type LLMSynthesizer struct {
 	// a Run, the calls count against its Limits whichever model makes them.
 	Model Model
 	// Template overrides DefaultTemplate("synthesize").
-	Template  *template.Template
-	MaxTokens int
+	Template *template.Template
+	// MaxOutputTokens bounds the output tokens, thinking included, of each
+	// call; zero means the engine's WithMaxOutputTokens within a Run.
+	MaxOutputTokens int
 }
 
 // Synthesize implements Synthesizer.
@@ -27,5 +29,5 @@ func (s *LLMSynthesizer) Synthesize(ctx context.Context, b Brief, results []Subt
 		struct {
 			Brief   Brief
 			Results []SubtaskResult
-		}{b, results}, s.MaxTokens)
+		}{b, results}, s.MaxOutputTokens)
 }

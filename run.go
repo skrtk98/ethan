@@ -48,7 +48,7 @@ func modelFor(ctx context.Context, m Model) (Model, error) {
 // if n is zero.
 func maxOutputFor(ctx context.Context, n int) int {
 	if r, _ := ctx.Value(runKey{}).(*run); n <= 0 && r != nil {
-		n = r.engine.maxTokens
+		n = r.engine.maxOutputTokens
 	}
 	return maxTokensOr(n)
 }
@@ -183,6 +183,10 @@ func (mm meteredModel) Generate(ctx context.Context, req Request) (*Response, er
 	if limit > 0 && spent > limit {
 		// The response is paid for but not used: the run stops here.
 		return resp, r.exceed(ErrTokenLimit)
+	}
+	if err == nil && ctx.Err() != nil {
+		// Canceled while the call ran: its answer must not finish a task.
+		err = context.Cause(ctx)
 	}
 	return resp, err
 }

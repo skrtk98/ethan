@@ -61,10 +61,10 @@ func TestStructuredOutput(t *testing.T) {
 	m := newModel(t, f, anthropic.WithWebSearch(3))
 
 	resp, err := m.Generate(context.Background(), ethan.Request{
-		System:    "judge",
-		Messages:  []ethan.Message{ethan.UserText("rate this")},
-		MaxTokens: 100,
-		Output:    &ethan.OutputSchema{Name: "score", Schema: json.RawMessage(`{"type":"object"}`)},
+		System:          "judge",
+		Messages:        []ethan.Message{ethan.UserText("rate this")},
+		MaxOutputTokens: 100,
+		Output:          &ethan.OutputSchema{Name: "score", Schema: json.RawMessage(`{"type":"object"}`)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +99,7 @@ func TestToolLoopReplaysThinkingBlocks(t *testing.T) {
 		`{"type":"object","properties":{"x":{"type":"integer"}},"required":["x"],"additionalProperties":false}`)}}
 
 	msgs := []ethan.Message{ethan.UserText("go")}
-	first, err := m.Generate(context.Background(), ethan.Request{Messages: msgs, Tools: tools, MaxTokens: 100})
+	first, err := m.Generate(context.Background(), ethan.Request{Messages: msgs, Tools: tools, MaxOutputTokens: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestToolLoopReplaysThinkingBlocks(t *testing.T) {
 		ethan.Message{Role: ethan.RoleAssistant, Parts: first.Parts},
 		ethan.Message{Role: ethan.RoleUser, Parts: []ethan.Part{{ToolResult: &ethan.ToolResult{CallID: "call-1", Content: "1"}}}},
 	)
-	second, err := m.Generate(context.Background(), ethan.Request{Messages: msgs, Tools: tools, MaxTokens: 100})
+	second, err := m.Generate(context.Background(), ethan.Request{Messages: msgs, Tools: tools, MaxOutputTokens: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestPausedTurnIsResumed(t *testing.T) {
 	}}
 	m := newModel(t, f, anthropic.WithoutFallbacks())
 
-	resp, err := m.Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("search")}, MaxTokens: 100})
+	resp, err := m.Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("search")}, MaxOutputTokens: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,8 +163,8 @@ func TestPausedTurnIsResumed(t *testing.T) {
 func TestRefusal(t *testing.T) {
 	f := &fakeAPI{responses: []string{`{"id":"msg","type":"message","role":"assistant","model":"m","stop_reason":"refusal",
 		"stop_details":{"type":"refusal","category":"cyber"},"content":[],"usage":{"input_tokens":5,"output_tokens":0}}`}}
-	resp, err := newModel(t, f).Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("x")}, MaxTokens: 10})
-	if !errors.Is(err, anthropic.ErrRefused) || !strings.Contains(err.Error(), "cyber") {
+	resp, err := newModel(t, f).Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("x")}, MaxOutputTokens: 10})
+	if !errors.Is(err, ethan.ErrRefused) || !strings.Contains(err.Error(), "cyber") {
 		t.Errorf("err = %v", err)
 	}
 	if resp == nil || resp.Usage.InputTokens != 5 {
@@ -178,7 +178,7 @@ func TestFailedContinuationKeepsUsage(t *testing.T) {
 		message("pause_turn", `{"type":"server_tool_use","id":"srv-1","name":"web_search","input":{"query":"q"}}`),
 	}}
 	resp, err := newModel(t, f).Generate(context.Background(), ethan.Request{
-		Messages: []ethan.Message{ethan.UserText("search")}, MaxTokens: 100,
+		Messages: []ethan.Message{ethan.UserText("search")}, MaxOutputTokens: 100,
 	})
 	if err == nil {
 		t.Fatal("the failed continuation returned no error")
@@ -193,7 +193,7 @@ func TestPromptCaching(t *testing.T) {
 		`"content":[{"type":"text","text":"ok"}],` +
 		`"usage":{"input_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":3}}`
 	f := &fakeAPI{responses: []string{cached, cached}}
-	req := ethan.Request{Messages: []ethan.Message{ethan.UserText("hi")}, MaxTokens: 10}
+	req := ethan.Request{Messages: []ethan.Message{ethan.UserText("hi")}, MaxOutputTokens: 10}
 
 	resp, err := newModel(t, f).Generate(context.Background(), req)
 	if err != nil {
@@ -212,5 +212,18 @@ func TestPromptCaching(t *testing.T) {
 	}
 	if _, ok := f.bodies[1]["cache_control"]; ok {
 		t.Error("cache_control sent with WithoutCache")
+	}
+}
+
+func TestClientOptionsAddUp(t *testing.T) {
+	f := &fakeAPI{responses: []string{message("end_turn", `{"type":"text","text":"hi"}`)}}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	m := anthropic.New(
+		anthropic.WithClientOptions(option.WithBaseURL(srv.URL)),
+		anthropic.WithClientOptions(option.WithAPIKey("test"), option.WithMaxRetries(0)))
+	resp, err := m.Generate(context.Background(), ethan.Request{Messages: []ethan.Message{ethan.UserText("hi")}})
+	if err != nil || resp.Text() != "hi" {
+		t.Fatalf("text %v, err %v; the first options were lost", resp, err)
 	}
 }
