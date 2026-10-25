@@ -25,6 +25,7 @@ type query struct {
 	OK      bool              `json:"ok"`
 	Skipped string            `json:"-"`
 	Inner   struct{ N uint8 } `json:"inner"`
+	//lint:ignore U1000 an unexported field must be left out of the schema
 	private int
 }
 
@@ -118,6 +119,7 @@ func TestSchemaForResolvesEmbeddedNamesLikeEncodingJSON(t *testing.T) {
 		right
 	}
 	type recursive struct {
+		//lint:ignore U1000 the embedding is what the test rejects
 		*recursive
 		N int
 	}
@@ -183,8 +185,9 @@ func TestFuncToolChecksItsInputAgainstTheSchema(t *testing.T) {
 
 func TestSchemaForFollowsEncodingJSONForNumbersAndBadTags(t *testing.T) {
 	s, err := ethan.SchemaFor[struct {
-		N   json.Number `json:"n"`
-		Bad int         `json:"a\"b"`
+		N json.Number `json:"n"`
+		//lint:ignore SA5008 encoding/json ignores the malformed tag, as SchemaFor must
+		Bad int `json:"a\"b"`
 	}]()
 	if err != nil {
 		t.Fatal(err)
