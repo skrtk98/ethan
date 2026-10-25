@@ -228,3 +228,17 @@ func TestSchemaForFollowsCustomEncodingsAndNamedRecursion(t *testing.T) {
 		t.Errorf("schema %s", s)
 	}
 }
+
+func TestSchemaForIgnoresHiddenFields(t *testing.T) {
+	type base struct {
+		Value json.RawMessage `json:"value"`
+	}
+	type input struct {
+		base
+		Value string `json:"value"`
+	}
+	s, err := ethan.SchemaFor[input]()
+	if err != nil || !strings.Contains(string(s), `"value":{"type":"string"}`) {
+		t.Errorf("schema %s, err %v", s, err)
+	}
+}

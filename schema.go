@@ -113,6 +113,9 @@ func schemaOf(t reflect.Type, seen []reflect.Type) (map[string]any, error) {
 				continue
 			}
 			win, err := dominant(f.name, all)
+			if err == nil {
+				err = win.err
+			}
 			if err != nil {
 				return nil, fmt.Errorf("%v: %w", t, err)
 			}
@@ -135,6 +138,7 @@ type field struct {
 	depth  int  // of embedding
 	tagged bool // named by a json tag
 	schema map[string]any
+	err    error // why there is no schema; it matters only if the field is used
 }
 
 // collectFields appends the candidate properties of struct t, at embedding
@@ -168,7 +172,9 @@ func collectFields(t reflect.Type, depth int, seen []reflect.Type, fields *[]fie
 		}
 		s, err := schemaOf(f.Type, seen)
 		if err != nil {
-			return fmt.Errorf("field %s: %w", f.Name, err)
+			// A field another one hides does not appear in the JSON.
+			*fields = append(*fields, field{name: cmp.Or(name, f.Name), depth: depth, tagged: name != "", err: fmt.Errorf("field %s: %w", f.Name, err)})
+			continue
 		}
 		if quoted(f.Type, opts) {
 			s = map[string]any{"type": "string"} // the value inside a JSON string
