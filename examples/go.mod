@@ -3,7 +3,6 @@ module github.com/skrtk98/ethan/examples
 go 1.26.0
 
 require (
-	github.com/openai/openai-go/v3 v3.81.0
 	github.com/skrtk98/ethan v0.0.0-20261025025047-6127b524fb86
 	github.com/skrtk98/ethan/anthropic v0.0.0-00010101000000-000000000000
 	github.com/skrtk98/ethan/openai v0.0.0-00010101000000-000000000000
@@ -17,6 +16,7 @@ require (
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
+	github.com/openai/openai-go/v3 v3.81.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
 	github.com/tidwall/gjson v1.19.0 // indirect
