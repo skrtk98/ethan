@@ -80,8 +80,9 @@ type Event struct {
 //
 // The Run waits while an observer runs: one doing slow work, such as
 // writing to the network, should hand events to its own goroutine, e.g.
-// through a channel. An observer may cause events itself, say by calling a
-// model of the Run; they are delivered after the current one.
+// through a channel. An observer must not cause events of the Run it
+// observes, as by calling one of its models with a context the Run passed:
+// delivery would deadlock.
 type Observer interface {
 	OnEvent(Event)
 }

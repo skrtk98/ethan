@@ -333,6 +333,21 @@ func TestCanceledRunIsCodedCanceled(t *testing.T) {
 	}
 }
 
+func TestCallWaitingForASlotDoesNotStartOnceTheLimitIsReached(t *testing.T) {
+	// The plan spends 20; A and B wait for the one slot, and whichever runs
+	// first reaches the limit of 40, so the other must not start.
+	m := ethantest.New().
+		On(ethan.TagPlan, ethantest.Decompose(plan("p", sub{ID: "a", Description: "A"}, sub{ID: "b", Description: "B"}))).
+		On(ethan.TagExecute, echoTask)
+	_, err := ethan.New(m, ethan.WithLimits(ethan.Limits{MaxDepth: 1, MaxConcurrency: 1, MaxTokens: 40})).Run(context.Background(), "goal")
+	if !errors.Is(err, ethan.ErrTokenLimit) {
+		t.Fatalf("err = %v, want ErrTokenLimit", err)
+	}
+	if n := len(m.Calls(ethan.TagExecute)); n != 1 {
+		t.Errorf("executed %d subtasks, want 1", n)
+	}
+}
+
 func TestOwnLLMComponentsCountAgainstLimits(t *testing.T) {
 	// A planner with a model of its own, as when only its template changes.
 	planner := ethantest.New().On(ethan.TagPlan, ethantest.Atomic())
