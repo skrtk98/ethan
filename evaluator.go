@@ -28,6 +28,8 @@ var scoreSchema = &OutputSchema{
 
 // LLMEvaluator is the default Evaluator: an LLM acting as a judge.
 type LLMEvaluator struct {
+	// Model is called for the scores; nil means the engine's model. Within
+	// a Run, the calls count against its Limits whichever model makes them.
 	Model Model
 	// PlanTemplate and ResultTemplate override DefaultTemplate("score_plan")
 	// and DefaultTemplate("score_result").

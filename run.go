@@ -1,6 +1,7 @@
 package ethan
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,19 +16,41 @@ func (e *Engine) newRun(goal string, cancel context.CancelCauseFunc, opts []RunO
 		o(r)
 	}
 	r.model = r.meter(e.model)
-	r.planner = e.planner
-	if r.planner == nil {
-		r.planner = &LLMPlanner{Model: r.model, MaxTokens: e.maxTokens}
-	}
-	r.evaluator = e.evaluator
-	if r.evaluator == nil {
-		r.evaluator = &LLMEvaluator{Model: r.model, MaxTokens: e.maxTokens}
-	}
-	r.synthesizer = e.synthesizer
-	if r.synthesizer == nil {
-		r.synthesizer = &LLMSynthesizer{Model: r.model, MaxTokens: e.maxTokens}
-	}
+	r.planner = cmp.Or[Planner](e.planner, &LLMPlanner{})
+	r.evaluator = cmp.Or[Evaluator](e.evaluator, &LLMEvaluator{})
+	r.synthesizer = cmp.Or[Synthesizer](e.synthesizer, &LLMSynthesizer{})
 	return r
+}
+
+// runKey is the context key of the run whose model calls are made.
+type runKey struct{}
+
+// modelFor returns the model the LLM components call: m, or the engine's
+// model if m is nil, metered when called within a Run so that every call
+// counts against its limits.
+func modelFor(ctx context.Context, m Model) (Model, error) {
+	r, _ := ctx.Value(runKey{}).(*run)
+	switch {
+	case r == nil && m == nil:
+		return nil, errors.New("ethan: no Model to call outside a Run")
+	case r == nil:
+		return m, nil
+	case m == nil:
+		return r.model, nil
+	}
+	if _, ok := m.(meteredModel); ok {
+		return m, nil
+	}
+	return r.meter(m), nil
+}
+
+// maxOutputFor returns n, or within a Run the engine's WithMaxOutputTokens
+// if n is zero.
+func maxOutputFor(ctx context.Context, n int) int {
+	if r, _ := ctx.Value(runKey{}).(*run); n <= 0 && r != nil {
+		n = r.engine.maxTokens
+	}
+	return maxTokensOr(n)
 }
 
 // finish records the end of the run and assembles its Result.

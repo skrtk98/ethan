@@ -82,7 +82,8 @@ func WithMaxPlans(n int) Option {
 }
 
 // WithMaxOutputTokens bounds the output tokens, including thinking, of each
-// model call. Default 16000.
+// model call. Default 16000. It applies to LLMPlanner, LLMEvaluator and
+// LLMSynthesizer values whose own limit is zero.
 func WithMaxOutputTokens(n int) Option {
 	return func(e *Engine) { e.maxTokens = n }
 }
@@ -137,6 +138,7 @@ func (e *Engine) Run(ctx context.Context, goal string, opts ...RunOption) (*Resu
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	r := e.newRun(goal, cancel, opts)
+	ctx = context.WithValue(ctx, runKey{}, r)
 	root := &Task{ID: "t0", Description: goal, Agent: e.agents[0].Name, Status: StatusPending}
 	r.emit(Event{Kind: EventRunStarted, Text: goal, Agent: root.Agent, Format: JournalFormat})
 	return r.finish(ctx, root, r.solveGoal(ctx, root))
@@ -161,6 +163,7 @@ func (e *Engine) Resume(ctx context.Context, events []Event, opts ...RunOption) 
 	root := s.root
 	reopen(root)
 	r := e.newRun(root.Description, cancel, opts)
+	ctx = context.WithValue(ctx, runKey{}, r)
 	r.prior = s.usage()
 	r.board.notes = s.notes
 	r.events = slices.Clone(events)

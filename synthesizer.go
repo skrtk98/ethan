@@ -13,6 +13,8 @@ type Synthesizer interface {
 
 // LLMSynthesizer is the default Synthesizer.
 type LLMSynthesizer struct {
+	// Model is called for the synthesis; nil means the engine's model. Within
+	// a Run, the calls count against its Limits whichever model makes them.
 	Model Model
 	// Template overrides DefaultTemplate("synthesize").
 	Template  *template.Template

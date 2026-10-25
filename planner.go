@@ -92,6 +92,8 @@ var decisionSchema = &OutputSchema{
 
 // LLMPlanner is the default Planner. It asks Model for a structured decision.
 type LLMPlanner struct {
+	// Model is called for the decisions; nil means the engine's model. Within
+	// a Run, the calls count against its Limits whichever model makes them.
 	Model Model
 	// Template overrides DefaultTemplate("plan").
 	Template  *template.Template
@@ -111,11 +113,15 @@ func generateJSON(ctx context.Context, m Model, tag string, t *template.Template
 	if err != nil {
 		return err
 	}
+	m, err = modelFor(ctx, m)
+	if err != nil {
+		return err
+	}
 	resp, err := m.Generate(ctx, Request{
 		Tag:       tag,
 		System:    system,
 		Messages:  []Message{UserText(user)},
-		MaxTokens: maxTokensOr(maxTokens),
+		MaxTokens: maxOutputFor(ctx, maxTokens),
 		Output:    schema,
 	})
 	if err != nil {
@@ -132,11 +138,15 @@ func generateText(ctx context.Context, m Model, tag string, t *template.Template
 	if err != nil {
 		return "", err
 	}
+	m, err = modelFor(ctx, m)
+	if err != nil {
+		return "", err
+	}
 	resp, err := m.Generate(ctx, Request{
 		Tag:       tag,
 		System:    system,
 		Messages:  []Message{UserText(user)},
-		MaxTokens: maxTokensOr(maxTokens),
+		MaxTokens: maxOutputFor(ctx, maxTokens),
 	})
 	if err != nil {
 		return "", err

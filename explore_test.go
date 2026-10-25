@@ -290,6 +290,20 @@ func TestTokenLimitStopsCallsOnceReached(t *testing.T) {
 	}
 }
 
+func TestOwnLLMComponentsCountAgainstLimits(t *testing.T) {
+	// A planner with a model of its own, as when only its template changes.
+	planner := ethantest.New().On(ethan.TagPlan, ethantest.Atomic())
+	m := ethantest.New().On(ethan.TagExecute, echoTask)
+	res, err := ethan.New(m, ethan.WithPlanner(&ethan.LLMPlanner{Model: planner}),
+		ethan.WithLimits(ethan.Limits{MaxTokens: 20})).Run(context.Background(), "goal")
+	if !errors.Is(err, ethan.ErrTokenLimit) {
+		t.Fatalf("err = %v, want ErrTokenLimit", err)
+	}
+	if res.Usage.Total() != 20 || len(m.Calls(ethan.TagExecute)) != 0 {
+		t.Errorf("spent %d, executed %d times; want the plan counted and no execution", res.Usage.Total(), len(m.Calls(ethan.TagExecute)))
+	}
+}
+
 func TestTokenLimitDefaultsToDefaultMaxTokens(t *testing.T) {
 	big := ethantest.JSON(ethan.Decision{Atomic: true})
 	big.Usage = ethan.Usage{InputTokens: ethan.DefaultMaxTokens}
