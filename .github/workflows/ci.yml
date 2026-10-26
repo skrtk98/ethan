@@ -23,6 +23,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: 1.26.x # the latest patch release, for govulncheck
+          check-latest: true # the runner's cached 1.26.x can lag behind
           # A key per module; the core module has no go.sum.
           cache-dependency-path: |
             ${{ matrix.module }}/go.mod
